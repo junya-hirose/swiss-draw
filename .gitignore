@@ -1,0 +1,26 @@
+# dependencies
+node_modules/
+
+# Next.js
+.next/
+out/
+
+# production
+build/
+dist/
+
+# local env
+.env
+.env*.local
+
+# logs
+*.log
+dev-server.err
+dev-server.log
+
+# TypeScript
+*.tsbuildinfo
+
+# local agent/tooling state
+.agents/
+node_modules
