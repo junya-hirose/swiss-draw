@@ -18,6 +18,7 @@
 
 html,
 body {
+  overflow-x: hidden;
   min-height: 100%;
   margin: 0;
   background: var(--bg);
@@ -36,6 +37,7 @@ body {
   background-size: 48px 48px;
 }
 
+.buttonLink,
 button,
 input,
 select,
@@ -43,7 +45,10 @@ textarea {
   font: inherit;
 }
 
+.buttonLink,
 button {
+  display: inline-grid;
+  place-items: center;
   min-height: 38px;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -54,8 +59,10 @@ button {
     border-color 160ms ease,
     background 160ms ease,
     transform 160ms ease;
+  text-decoration: none;
 }
 
+.buttonLink:hover,
 button:hover:not(:disabled) {
   border-color: var(--green);
   transform: translateY(-1px);
@@ -109,7 +116,7 @@ h2 {
 
 .appShell {
   min-height: 100vh;
-  padding: 28px 28px 72px;
+  padding: 28px;
 }
 
 .topBar {
@@ -146,11 +153,16 @@ h2 {
   background: #121310;
 }
 
+.modeSwitch a,
 .modeSwitch button,
 .segmented button,
 .chip {
   min-width: 44px;
   padding: 0 12px;
+}
+
+.modeSwitch a {
+  color: var(--text);
 }
 
 .modeSwitch .active,
@@ -197,11 +209,26 @@ h2 {
   margin: 0 auto;
 }
 
+.noticeBar {
+  max-width: 1500px;
+  margin: 0 auto 18px;
+  border: 1px solid color-mix(in srgb, var(--amber) 55%, var(--line));
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: #17140d;
+  color: var(--amber);
+  font-weight: 800;
+}
+
 .adminGrid {
   display: grid;
-  grid-template-columns: minmax(300px, 0.85fr) minmax(480px, 1.45fr) minmax(320px, 0.9fr);
+  grid-template-columns: minmax(280px, 340px) minmax(0, 1fr) minmax(280px, 340px);
   gap: 16px;
   align-items: start;
+}
+
+.adminGrid.eventIssued .opsPanel {
+  order: -1;
 }
 
 .participantGrid {
@@ -209,6 +236,10 @@ h2 {
   grid-template-columns: minmax(300px, 0.8fr) minmax(420px, 1.1fr) minmax(320px, 0.9fr);
   gap: 16px;
   align-items: start;
+}
+
+.participantMatchPanel {
+  border-color: color-mix(in srgb, var(--cyan) 36%, var(--line));
 }
 
 .panel {
@@ -220,11 +251,24 @@ h2 {
 
 .setupPanel,
 .opsPanel,
+.exportPanel,
 .standingsPanel,
 .participantGrid .panel {
   display: grid;
   gap: 16px;
   padding: 16px;
+}
+
+.setupPanel:not(.compactSetup) {
+  gap: 12px 16px;
+  grid-template-columns: 1fr;
+  align-items: start;
+}
+
+.setupPanel > .panelHeader,
+.setupPanel > .issuedBox,
+.setupPanel > .primaryAction {
+  grid-column: 1 / -1;
 }
 
 .panelHeader {
@@ -242,7 +286,7 @@ h2 {
 
 .optionBlock {
   display: grid;
-  gap: 8px;
+  gap: 6px;
 }
 
 .optionBlock > span {
@@ -251,7 +295,7 @@ h2 {
 }
 
 .optionButtons button {
-  min-height: 34px;
+  min-height: 32px;
   font-size: 12px;
 }
 
@@ -282,6 +326,18 @@ h2 {
   font-weight: 800;
 }
 
+.headerPrimary {
+  border-color: transparent;
+  background: var(--red);
+  color: white;
+  font-weight: 900;
+}
+
+.dangerButton {
+  border-color: color-mix(in srgb, var(--amber) 44%, var(--line));
+  color: var(--amber);
+}
+
 .primaryAction:hover:not(:disabled) {
   border-color: white;
 }
@@ -300,6 +356,145 @@ h2 {
 
 .issuedBox {
   border-color: color-mix(in srgb, var(--green) 42%, var(--line));
+}
+
+.compactSetup {
+  align-content: start;
+}
+
+.deckAdminPanel {
+  display: grid;
+  gap: 8px;
+  border: 1px solid color-mix(in srgb, var(--cyan) 34%, var(--line));
+  border-radius: 8px;
+  padding: 10px;
+  background: #101614;
+}
+
+.deckAdminSummary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.deckAdminSummary span {
+  color: var(--cyan);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.deckAdminSummary strong {
+  color: var(--text);
+  font-size: 22px;
+  line-height: 1;
+}
+
+.deckAdminSummary em {
+  border: 1px solid color-mix(in srgb, var(--green) 36%, var(--line));
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: var(--green);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.deckAdminList {
+  display: grid;
+  gap: 5px;
+  max-height: 172px;
+  overflow: auto;
+}
+
+.deckAdminRow {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) minmax(70px, 0.72fr);
+  gap: 6px;
+  align-items: center;
+  min-height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 7px;
+  background: #11120f;
+}
+
+.deckAdminRow span {
+  display: inline-grid;
+  place-items: center;
+  min-height: 22px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--red) 24%, #11120f);
+  color: var(--red);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.deckAdminRow.done span {
+  background: color-mix(in srgb, var(--green) 24%, #11120f);
+  color: var(--green);
+}
+
+.deckAdminRow strong,
+.deckAdminRow small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deckAdminRow small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.exportPanel {
+  align-content: start;
+}
+
+.exportSummary,
+.exportActions {
+  display: grid;
+  gap: 6px;
+}
+
+.exportSummary {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.exportSummary span {
+  display: grid;
+  place-items: center;
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #11120f;
+  color: var(--cyan);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.exportActions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.exportActions button {
+  min-height: 36px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.exportNote {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.compactIssuedBox {
+  grid-template-columns: minmax(0, 1fr) 74px;
+  gap: 10px;
+  padding: 10px;
 }
 
 .shareGrid strong,
@@ -347,9 +542,9 @@ h2 {
 
 .matchRow {
   display: grid;
-  grid-template-columns: 52px minmax(180px, 0.75fr) 112px minmax(420px, 1.2fr);
+  grid-template-columns: 52px minmax(0, 1fr) 108px;
   gap: 10px;
-  align-items: center;
+  align-items: start;
   padding: 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -385,6 +580,16 @@ h2 {
   display: grid;
   gap: 3px;
   min-width: 0;
+}
+
+.sideLabel {
+  width: max-content;
+  border-radius: 4px;
+  padding: 1px 5px;
+  background: #0f100e;
+  color: var(--quiet);
+  font-size: 10px;
+  font-weight: 900;
 }
 
 .matchPlayerCell small {
@@ -440,24 +645,75 @@ h2 {
 
 .adminMatchTools {
   display: grid;
+  grid-column: 1 / -1;
   gap: 8px;
+  padding-top: 2px;
 }
 
 .adminScores {
   display: grid;
-  grid-template-columns: 1fr 1fr 64px 88px 88px;
+  grid-template-columns: minmax(112px, 1fr) minmax(112px, 1fr) minmax(260px, max-content);
   gap: 6px;
   align-items: center;
 }
 
-.adminScores button {
+.adminScores button,
+.resultActions button {
   min-height: 34px;
   font-size: 12px;
 }
 
+.scoreGroup {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.scoreGroup > span {
+  color: var(--quiet);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.resultActions {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(58px, 1fr));
+  gap: 6px;
+}
+
+.turnOrderTools,
+.turnOrderBox {
+  display: grid;
+  gap: 8px;
+  border: 1px solid color-mix(in srgb, var(--cyan) 34%, var(--line));
+  border-radius: 8px;
+  padding: 10px;
+  background: #101614;
+}
+
+.turnOrderTools {
+  grid-template-columns: minmax(80px, 0.8fr) repeat(2, minmax(100px, 1fr));
+  align-items: center;
+}
+
+.turnOrderTools > span,
+.turnOrderBox > span {
+  color: var(--cyan);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.turnOrderTools .active,
+.turnOrderBox .active {
+  border-color: var(--cyan);
+  background: var(--cyan);
+  color: #07110f;
+  font-weight: 900;
+}
+
 .judgeTools {
   display: grid;
-  grid-template-columns: 96px minmax(120px, 1fr) 110px minmax(120px, 1fr) 58px;
+  grid-template-columns: 98px minmax(120px, 0.9fr) minmax(110px, 0.8fr) minmax(160px, 1fr) 58px;
   gap: 6px;
 }
 
@@ -517,14 +773,20 @@ h2 {
 
 .standingRow {
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr) 48px 48px 48px 54px;
-  gap: 8px;
+  grid-template-columns: 28px minmax(76px, 1fr) 46px 32px 32px 46px;
+  gap: 5px;
   align-items: center;
   min-height: 42px;
-  padding: 8px 10px;
+  padding: 8px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: #11120f;
+}
+
+.compactEmpty {
+  min-height: 84px;
+  padding: 12px;
+  text-align: center;
 }
 
 .standingRow:first-child {
@@ -533,10 +795,37 @@ h2 {
 
 .standingRow span {
   color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.standingRow strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .standingRow.dropped {
   opacity: 0.54;
+}
+
+.standingsHint {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.standingsHead {
+  min-height: 30px;
+  background: #0f100e;
+  color: var(--quiet);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.standingsHead:first-child {
+  border-color: var(--line);
 }
 
 .history details {
@@ -562,24 +851,68 @@ h2 {
   color: var(--muted);
 }
 
-.identity {
+.historyRow small {
+  grid-column: 1 / -1;
+  color: var(--amber);
+  font-size: 12px;
+}
+
+.participantPanelHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.participantPanelHead select {
+  max-width: 210px;
+  min-height: 34px;
+  padding: 7px 9px;
+  font-size: 12px;
+}
+
+.identityLine,
+.deckStatusLine,
+.opponentLine,
+.matchSummary,
+.scoreLine {
   display: grid;
-  gap: 10px;
-  padding: 16px;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 6px;
   background: #11120f;
 }
 
-.identity span {
-  color: var(--green);
-  font-size: 13px;
-  font-weight: 800;
+.identityLine {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  min-height: 42px;
+  padding: 8px 10px;
 }
 
-.identity strong {
-  font-size: 32px;
-  line-height: 1;
+.identityLine strong,
+.deckStatusLine strong,
+.opponentLine strong,
+.scoreLine strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.identityLine span {
+  color: var(--green);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.identityLine small {
+  color: var(--cyan);
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
 }
 
 .joinBox {
@@ -590,7 +923,33 @@ h2 {
 
 .reportBox {
   display: grid;
-  gap: 16px;
+  gap: 8px;
+}
+
+.matchSummary {
+  grid-template-columns: 58px 1fr auto;
+  min-height: 48px;
+  padding: 8px 10px;
+  border-color: color-mix(in srgb, var(--cyan) 46%, var(--line));
+  background: #101614;
+}
+
+.matchSummary strong {
+  color: var(--green);
+  font-size: 24px;
+  line-height: 1;
+}
+
+.matchSummary span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.matchSummary b {
+  color: var(--cyan);
+  font-size: 26px;
+  line-height: 1;
 }
 
 .participantTimer {
@@ -624,23 +983,162 @@ h2 {
   background: #11120f;
 }
 
-.ticker {
-  position: fixed;
-  right: 0;
-  bottom: 0;
-  left: 0;
+.versusBlock strong {
+  display: grid;
+  gap: 4px;
+}
+
+.versusBlock small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.opponentLine {
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  min-height: 38px;
+  padding: 7px 10px;
+}
+
+.opponentLine span,
+.deckStatusLine span,
+.scoreLine > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.opponentLine small {
+  color: var(--quiet);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.deckCheckPanel {
+  display: grid;
+  gap: 8px;
+}
+
+.checkCompact {
+  display: flex;
+  align-items: center;
+  min-height: 34px;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 9px;
+  background: #11120f;
+  color: var(--text);
+  font-weight: 800;
+}
+
+.checkCompact input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--green);
+}
+
+.deckStatusLine {
+  grid-template-columns: 46px minmax(0, 1fr) auto;
+  min-height: 34px;
+  padding: 6px 9px;
+}
+
+.deckStatusLine em {
+  color: var(--amber);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.deckRegisterLine {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 58px 58px;
+  gap: 6px;
+}
+
+.deckRegisterLine input,
+.deckRegisterLine button,
+.fileButton {
+  min-height: 34px;
+  padding: 7px 8px;
+  font-size: 12px;
+}
+
+.fileButton {
+  display: inline-grid;
+  place-items: center;
   overflow: hidden;
-  border-top: 1px solid var(--line);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #22231f;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.fileButton input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.scoreLine {
+  grid-template-columns: 34px minmax(0, 1fr) minmax(82px, 112px);
+  min-height: 44px;
+  padding: 6px 8px;
+}
+
+.resultNotice,
+.actionHint {
+  border: 1px solid color-mix(in srgb, var(--green) 34%, var(--line));
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #11170f;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.resultNotice {
+  display: grid;
+  gap: 4px;
+}
+
+.resultNotice strong {
+  color: var(--green);
+}
+
+.reportPreview {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #11120f;
+  color: var(--cyan);
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ticker {
+  max-width: 1500px;
+  margin: 16px auto 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
   background: #10110e;
   color: var(--green);
 }
 
 .ticker div {
   display: flex;
-  width: max-content;
-  gap: 34px;
-  padding: 13px 0;
-  animation: ticker 28s linear infinite;
+  width: auto;
+  gap: 14px 24px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
 }
 
 .ticker span {
@@ -648,19 +1146,22 @@ h2 {
   font-weight: 800;
 }
 
-@keyframes ticker {
-  from {
-    transform: translateX(100vw);
-  }
-  to {
-    transform: translateX(-100%);
-  }
-}
-
 @media (max-width: 1180px) {
   .adminGrid,
   .participantGrid {
     grid-template-columns: 1fr;
+  }
+
+  .setupPanel:not(.compactSetup) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .adminGrid.eventIssued .opsPanel {
+    order: -2;
+  }
+
+  .adminGrid.eventIssued .standingsPanel {
+    order: -1;
   }
 
   .matchRow {
@@ -682,7 +1183,62 @@ h2 {
 
 @media (max-width: 760px) {
   .appShell {
-    padding: 18px 14px 72px;
+    padding: 18px 14px 24px;
+  }
+
+  .adminShell {
+    padding: 10px 8px 14px;
+  }
+
+  .participantShell {
+    padding: 10px 8px 14px;
+  }
+
+  .adminShell .topBar,
+  .participantShell .topBar {
+    margin-bottom: 8px;
+  }
+
+  .adminShell h1,
+  .participantShell h1 {
+    font-size: 22px;
+  }
+
+  .adminGrid {
+    gap: 8px;
+  }
+
+  .adminGrid.eventIssued .opsPanel {
+    order: -3;
+  }
+
+  .adminGrid.eventIssued .standingsPanel {
+    order: -2;
+  }
+
+  .adminGrid.eventIssued .exportPanel {
+    order: -1;
+  }
+
+  .adminGrid.eventIssued .setupPanel {
+    order: 2;
+  }
+
+  .setupPanel,
+  .opsPanel,
+  .exportPanel,
+  .standingsPanel {
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .participantGrid {
+    gap: 8px;
+  }
+
+  .participantGrid .panel {
+    gap: 8px;
+    padding: 10px;
   }
 
   .topBar,
@@ -698,7 +1254,7 @@ h2 {
     flex: 1;
   }
 
-  .statusRail,
+  .setupPanel:not(.compactSetup),
   .formPair,
   .checkLine,
   .shareGrid,
@@ -720,16 +1276,294 @@ h2 {
     grid-template-columns: 1fr;
   }
 
+  .adminGrid:not(.eventIssued) .opsPanel,
+  .adminGrid:not(.eventIssued) .standingsPanel {
+    display: none;
+  }
+
+  .participantMatchPanel {
+    order: -2;
+  }
+
+  .participantInfoPanel {
+    order: -1;
+  }
+
+  .participantShell .statusRail {
+    display: none;
+  }
+
+  .participantShell .modeSwitch {
+    display: none;
+  }
+
+  .statusRail {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 1px;
+    margin-bottom: 8px;
+  }
+
+  .statusRail div {
+    min-height: 46px;
+    padding: 7px 5px;
+  }
+
+  .statusRail span {
+    font-size: 10px;
+  }
+
+  .statusRail strong {
+    font-size: 14px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .resultActions {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .turnOrderTools {
+    grid-template-columns: 1fr;
+  }
+
   .judgeTools,
   .timeExtend {
     grid-template-columns: 1fr;
   }
 
-  .statusRail strong {
-    font-size: 18px;
-  }
-
   .identity strong {
     font-size: 24px;
+  }
+
+  .adminShell .panelHeader {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .adminShell .buttonRow {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .adminShell .buttonRow button {
+    min-height: 34px;
+    padding: 0 6px;
+    font-size: 12px;
+  }
+
+  .shareGrid {
+    grid-template-columns: minmax(0, 1fr) 52px;
+    gap: 8px;
+    padding: 8px;
+  }
+
+  .shareGrid .qr {
+    width: 52px;
+    height: 52px;
+    padding: 3px;
+  }
+
+  .shareGrid button {
+    grid-column: 1 / -1;
+    min-height: 32px;
+  }
+
+  .deckAdminPanel {
+    gap: 6px;
+    padding: 8px;
+  }
+
+  .deckAdminList {
+    max-height: 130px;
+  }
+
+  .deckAdminRow {
+    grid-template-columns: 28px minmax(0, 1fr) 74px;
+    min-height: 30px;
+    padding: 4px 6px;
+  }
+
+  .exportSummary span {
+    min-height: 30px;
+  }
+
+  .exportActions {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .exportActions button {
+    min-height: 32px;
+    padding: 0 4px;
+  }
+
+  .matchList {
+    gap: 6px;
+  }
+
+  .matchRow {
+    grid-template-columns: 40px minmax(0, 1fr) 68px;
+    gap: 6px;
+    padding: 7px;
+  }
+
+  .tableBadge {
+    min-height: 36px;
+    font-size: 13px;
+  }
+
+  .matchPlayers {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+
+  .matchPlayers > span {
+    display: none;
+  }
+
+  .matchPlayerCell {
+    grid-template-columns: 24px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .matchPlayerCell strong {
+    overflow: hidden;
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .matchPlayerCell small {
+    padding: 1px 5px;
+    font-size: 10px;
+  }
+
+  .matchScore {
+    grid-column: auto;
+    text-align: right;
+  }
+
+  .matchScore span {
+    font-size: 15px;
+  }
+
+  .tableTime {
+    font-size: 12px;
+  }
+
+  .adminMatchTools {
+    gap: 6px;
+  }
+
+  .adminScores {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+
+  .scoreGroup {
+    grid-template-columns: minmax(0, 1fr) minmax(90px, 120px);
+    align-items: center;
+  }
+
+  .scoreButtons {
+    gap: 4px;
+  }
+
+  .resultActions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .turnOrderTools {
+    grid-template-columns: 1fr 1fr;
+    gap: 5px;
+    padding: 7px;
+  }
+
+  .turnOrderTools > span {
+    grid-column: 1 / -1;
+  }
+
+  .judgeTools {
+    grid-template-columns: 62px minmax(0, 1fr) minmax(0, 1fr);
+    gap: 5px;
+  }
+
+  .judgeTools input,
+  .judgeTools select,
+  .judgeTools button {
+    min-height: 32px;
+    padding: 6px;
+    font-size: 12px;
+  }
+
+  .matchSummary {
+    grid-template-columns: 48px 1fr auto;
+    min-height: 42px;
+    padding: 7px 8px;
+  }
+
+  .matchSummary strong {
+    font-size: 22px;
+  }
+
+  .matchSummary b {
+    font-size: 22px;
+  }
+
+  .opponentLine {
+    grid-template-columns: 36px minmax(0, 1fr) auto;
+    min-height: 34px;
+    padding: 6px 8px;
+  }
+
+  .turnOrderBox {
+    grid-template-columns: 58px minmax(0, 1fr) 130px;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 8px;
+  }
+
+  .turnOrderBox .segmented {
+    flex-wrap: nowrap;
+    gap: 4px;
+  }
+
+  .turnOrderBox .segmented button {
+    min-height: 32px;
+    min-width: 56px;
+    padding: 0 8px;
+    font-size: 12px;
+  }
+
+  .reportBox {
+    gap: 8px;
+  }
+
+  .reportBox .scoreButtons {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .reportBox .chip {
+    min-height: 34px;
+  }
+
+  .scoreLine {
+    grid-template-columns: 30px minmax(0, 1fr) 90px;
+    min-height: 40px;
+    padding: 5px 7px;
+  }
+
+  .deckRegisterLine {
+    grid-template-columns: minmax(0, 1fr) 52px 52px;
+  }
+
+  .primaryAction {
+    min-height: 40px;
+  }
+
+  .ticker {
+    margin: 16px 0 0;
   }
 }

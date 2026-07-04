@@ -4,8 +4,12 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:direct": "node scripts/dev-direct.mjs",
     "build": "next build",
-    "lint": "next lint"
+    "lint": "eslint . --max-warnings=0",
+    "simulate": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/simulate-tournament.mjs",
+    "verify:lifecycle": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/verify-lifecycle.mjs",
+    "verify:random": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/random-tournament-check.mjs"
   },
   "dependencies": {
     "next": "16.2.9",
