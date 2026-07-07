@@ -40,7 +40,22 @@ export function buildResultsPayload(tournament: Tournament, standings: Standing[
       deckRegisteredAt: player.deckRegisteredAt ?? "",
       byeCount: player.byeCount,
       disqualified: player.disqualified ?? false,
+      dropped: player.dropped ?? false,
     })),
+    // 外部サービス連携用のペナルティ台帳（全ラウンドのジャッジアクションを時系列で保持）。
+    penalties: tournament.rounds.flatMap((round) =>
+      round.matches.flatMap((match) =>
+        match.judgeActions.map((action) => ({
+          round: round.number,
+          table: match.table,
+          playerId: action.playerId,
+          playerName: playerName(tournament.players, action.playerId),
+          type: action.type,
+          note: action.note,
+          createdAt: action.createdAt,
+        })),
+      ),
+    ),
     standings: standings.map((standing, index) => ({
       rank: index + 1,
       id: standing.id,

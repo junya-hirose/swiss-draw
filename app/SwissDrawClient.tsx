@@ -16,6 +16,7 @@ import {
   generateEventCode,
   isStairPairing,
   makeEvent,
+  makeId,
   normalizeBestOf,
   normalizeMatch,
   normalizeTournament,
@@ -89,6 +90,10 @@ function readInitialSearchParam(key: string) {
 
 function tournamentStorageKey(eventCode: string) {
   return `swiss-draw-tournament:${eventCode}`;
+}
+
+function participantLockKey(eventCode: string) {
+  return `swiss-draw-participant-lock:${eventCode}`;
 }
 
 function readStoredTournament(eventCode: string | null): Tournament | null {
@@ -334,14 +339,27 @@ export default function SwissDrawClient({
         );
       }
       setIsSetupExpanded(stored.state === "setup");
+      const lockName = participantLockKey(stored.settings.eventCode);
+      const lockedId = localStorage.getItem(lockName);
+      const lockValid =
+        Boolean(lockedId) && stored.players.some((storedPlayer) => storedPlayer.id === lockedId);
       const playerMatched =
         Boolean(player) && stored.players.some((storedPlayer) => storedPlayer.id === player);
-      setSelectedPlayerId(playerMatched && player ? player : stored.players[0]?.id ?? "");
-      setPlayerConfirmed((current) => current || playerMatched);
-      if (player && !playerMatched) {
-        setEventLoadError(
-          `URLのプレイヤーID ${player} が見つかりません。名前を選び直してください。`,
-        );
+      if (lockValid && lockedId) {
+        // このブラウザは既に本人確認済み。以後は別の参加者へ切り替えられない。
+        setSelectedPlayerId(lockedId);
+        setPlayerConfirmed(true);
+      } else {
+        setSelectedPlayerId(playerMatched && player ? player : stored.players[0]?.id ?? "");
+        setPlayerConfirmed((current) => current || playerMatched);
+        if (playerMatched && player) {
+          localStorage.setItem(lockName, player);
+        }
+        if (player && !playerMatched) {
+          setEventLoadError(
+            `URLのプレイヤーID ${player} が見つかりません。名前を選び直してください。`,
+          );
+        }
       }
     } else if (player) {
       setSelectedPlayerId(player);
@@ -672,6 +690,7 @@ export default function SwissDrawClient({
         swissRounds: recommendedSwissRounds(participantCount),
       };
       setSelectedPlayerId(nextId);
+      localStorage.setItem(participantLockKey(current.settings.eventCode), nextId);
       return {
         ...current,
         settings: nextSettings,
@@ -896,6 +915,26 @@ export default function SwissDrawClient({
     });
   }
 
+  function togglePlayerDrop(playerId: string) {
+    const target = tournament.players.find((player) => player.id === playerId);
+    if (!target || isComplete) return;
+    const next = !target.dropped;
+    const message = next
+      ? `${target.name} をドロップ（棄権）として記録しますか？\n進行中のマッチはそのまま有効で、次のラウンドの組み合わせから除外されます。`
+      : `${target.name} のドロップを取り消して、次のラウンドから組み合わせに戻しますか？`;
+    if (!window.confirm(message)) return;
+    setTournament((current) => ({
+      ...current,
+      players: current.players.map((player) =>
+        player.id === playerId ? { ...player, dropped: next } : player,
+      ),
+      events: [
+        makeEvent(`${target.name} ${next ? "ドロップ" : "ドロップ取消"}`),
+        ...current.events,
+      ].slice(0, 30),
+    }));
+  }
+
   function recordJudgeCall(matchId: string) {
     setTournament((current) => {
       if (current.state === "complete") return current;
@@ -914,7 +953,7 @@ export default function SwissDrawClient({
               ...match,
               judgeCalls: [
                 {
-                  id: Math.random().toString(36).slice(2),
+                  id: makeId(),
                   calledAt: new Date().toISOString(),
                   resolvedAt: null,
                 },
@@ -1030,7 +1069,7 @@ export default function SwissDrawClient({
       if (!window.confirm(`${playerLabel} を${judgeActionLabels[type]}として記録しますか？`)) return;
     }
     const action: JudgeAction = {
-      id: Math.random().toString(36).slice(2),
+      id: makeId(),
       playerId,
       type,
       note: note.trim(),
@@ -1175,6 +1214,25 @@ export default function SwissDrawClient({
       return;
     }
     reportMatch(selectedMatch.id, scoreA, scoreB);
+  }
+
+  function submitSimpleResult(didWin: boolean) {
+    if (!selectedMatch || !selectedMatch.playerBId || !selectedPlayer) return;
+    if (
+      !window.confirm(
+        `${selectedPlayer.name} の${didWin ? "勝ち" : "負け"}で報告します。報告後の変更はスタッフのみ可能です。よろしいですか？`,
+      )
+    ) {
+      return;
+    }
+    const isA = selectedMatch.playerAId === selectedPlayerId;
+    const selfScore = didWin ? targetScore : 0;
+    const opponentScore = didWin ? 0 : targetScore;
+    reportMatch(
+      selectedMatch.id,
+      isA ? selfScore : opponentScore,
+      isA ? opponentScore : selfScore,
+    );
   }
 
   function scoreButtons(value: number, onChange: (score: number) => void) {
@@ -1726,6 +1784,8 @@ export default function SwissDrawClient({
             standings={standings}
             rounds={tournament.rounds}
             players={tournament.players}
+            showPenaltyLog
+            onToggleDrop={isComplete ? undefined : togglePlayerDrop}
           />
         </section>
       ) : eventMissing ? (
@@ -1764,7 +1824,15 @@ export default function SwissDrawClient({
                 onClick={() => {
                   const chosen = tournament.players.find((player) => player.id === selectedPlayerId);
                   if (!chosen) return;
-                  if (window.confirm(`${chosen.name} さんとして参加します。よろしいですか？`)) {
+                  if (
+                    window.confirm(
+                      `${chosen.name} さんとして参加します。決定後にこの端末で別の参加者へ切り替えることはできません。よろしいですか？`,
+                    )
+                  ) {
+                    localStorage.setItem(
+                      participantLockKey(tournament.settings.eventCode),
+                      chosen.id,
+                    );
                     setPlayerConfirmed(true);
                   }
                 }}
@@ -1795,19 +1863,6 @@ export default function SwissDrawClient({
           <section className="panel participantInfoPanel">
             <div className="participantPanelHead">
               <p className="eyebrow">参加者</p>
-              {initialPlayerLocked ? null : (
-                <select
-                  aria-label="参加者を選択"
-                  value={selectedPlayerId}
-                  onChange={(event) => setSelectedPlayerId(event.target.value)}
-                >
-                  {tournament.players.map((player) => (
-                    <option key={player.id} value={player.id}>
-                      {player.id} / {player.name}
-                    </option>
-                  ))}
-                </select>
-              )}
             </div>
 
             {tournament.settings.inputMode === "qr" &&
@@ -2013,6 +2068,20 @@ export default function SwissDrawClient({
                   </div>
                 ) : null}
                 {canParticipantReport ? (
+                  targetScore === 1 ? (
+                    <div className="simpleReport">
+                      <button
+                        className="primaryAction"
+                        type="button"
+                        onClick={() => submitSimpleResult(true)}
+                      >
+                        勝ちました
+                      </button>
+                      <button type="button" onClick={() => submitSimpleResult(false)}>
+                        負けました
+                      </button>
+                    </div>
+                  ) : (
                   <>
                     <div className="scoreLine">
                       <span>自分</span>
@@ -2035,6 +2104,7 @@ export default function SwissDrawClient({
                       この結果で報告
                     </button>
                   </>
+                  )
                 ) : (
                   <div className="resultNotice">
                     <strong>参加者からの変更はできません</strong>
@@ -2068,12 +2138,19 @@ export default function SwissDrawClient({
         </section>
       )}
 
-      {view === "admin" ? (
+      {view === "admin" && tournament.events.length > 0 ? (
         <section className="ticker" aria-label="round events">
-          <div>
-            {tournament.events.map((event) => (
-              <span key={event.id}>{event.text}</span>
-            ))}
+          <div className="tickerTrack">
+            <div className="tickerGroup">
+              {tournament.events.map((event) => (
+                <span key={event.id}>{event.text}</span>
+              ))}
+            </div>
+            <div className="tickerGroup" aria-hidden="true">
+              {tournament.events.map((event) => (
+                <span key={`dup-${event.id}`}>{event.text}</span>
+              ))}
+            </div>
           </div>
         </section>
       ) : null}
@@ -2355,15 +2432,24 @@ function StandingsPanel({
   rounds,
   players,
   selfId,
+  showPenaltyLog = false,
+  onToggleDrop,
 }: {
   isFinal: boolean;
   standings: Standing[];
   rounds: Round[];
   players: Player[];
   selfId?: string;
+  showPenaltyLog?: boolean;
+  onToggleDrop?: (playerId: string) => void;
 }) {
   const visibleStandings = standings.filter((standing) => !standing.disqualified);
   const disqualifiedStandings = standings.filter((standing) => standing.disqualified);
+  const penalties = rounds.flatMap((round) =>
+    round.matches.flatMap((match) =>
+      match.judgeActions.map((action) => ({ round: round.number, table: match.table, action })),
+    ),
+  );
   const selfRank = selfId
     ? visibleStandings.findIndex((standing) => standing.id === selfId) + 1
     : 0;
@@ -2416,6 +2502,17 @@ function StandingsPanel({
             <strong>
               {standing.name}
               {standing.dropped ? <b className="rowBadge">棄権</b> : null}
+              {onToggleDrop ? (
+                <button
+                  className="dropToggle"
+                  type="button"
+                  onClick={() => onToggleDrop(standing.id)}
+                >
+                  {players.find((player) => player.id === standing.id)?.dropped
+                    ? "棄権取消"
+                    : "ドロップ"}
+                </button>
+              ) : null}
             </strong>
             <span>{standing.matchPoints}MP</span>
             <span>{standing.wins}W</span>
@@ -2437,6 +2534,28 @@ function StandingsPanel({
           </div>
         ))}
       </div>
+
+      {showPenaltyLog ? (
+        <details className="penaltyLog">
+          <summary>ペナルティ履歴（{penalties.length}件）</summary>
+          {penalties.length === 0 ? (
+            <p className="fieldNote">記録されたペナルティはありません。</p>
+          ) : (
+            penalties.map(({ round, table, action }) => (
+              <div className="historyRow penaltyRow" key={action.id}>
+                <span>R{round}-T{table}</span>
+                <strong>{playerName(players, action.playerId)}</strong>
+                <span>{judgeActionLabels[action.type]}</span>
+                <small>
+                  {action.createdAt ? new Date(action.createdAt).toLocaleTimeString("ja-JP") : ""}
+                  {action.note ? ` / ${action.note}` : ""}
+                </small>
+              </div>
+            ))
+          )}
+          <p className="fieldNote">全件は「全結果JSON」の penalties にも出力されます。</p>
+        </details>
+      ) : null}
 
       <div className="history">
         {rounds.map((round) => (

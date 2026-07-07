@@ -25,6 +25,8 @@ export type Player = {
   checkedIn: boolean;
   byeCount: number;
   disqualified?: boolean;
+  /** 任意ドロップ（棄権）。次ラウンド以降のペアリングから除外される。 */
+  dropped?: boolean;
   deckName?: string;
   deckImageName?: string;
   deckRegisteredAt?: string;
@@ -199,6 +201,7 @@ export function normalizeTournament(tournament: Tournament): Tournament {
     deckImageName: player.deckImageName ?? "",
     deckRegisteredAt: player.deckRegisteredAt ?? "",
     disqualified: player.disqualified ?? false,
+    dropped: player.dropped ?? false,
   }));
   const completedRounds: Round[] = [];
   const normalizedRounds = tournament.rounds.map((round) => {
@@ -306,7 +309,7 @@ export function buildStandings(players: Player[], rounds: Round[], settings: Set
       opponentsOpponentsMatchWinPercentage: 0,
       opponents: [],
       defeatedOpponents: [],
-      dropped: player.disqualified ?? false,
+      dropped: (player.dropped ?? false) || (player.disqualified ?? false),
     });
   });
 
@@ -378,7 +381,7 @@ export function buildStandings(players: Player[], rounds: Round[], settings: Set
       (total, opponentId) => total + (byId.get(opponentId)?.matchPoints ?? 0),
       0,
     ),
-    dropped: standing.disqualified === true || standing.losses >= limit,
+    dropped: standing.dropped || standing.disqualified === true || standing.losses >= limit,
   }));
   const omwById = new Map(withOpponentPercentages.map((standing) => [standing.id, standing]));
 
@@ -531,9 +534,13 @@ export function isChampionDecided(standings: Standing[], rounds: Round[]) {
   return undefeated.length <= 1;
 }
 
+export function makeId(): string {
+  return Math.random().toString(36).slice(2);
+}
+
 export function makeEvent(text: string): TimelineEvent {
   return {
-    id: Math.random().toString(36).slice(2),
+    id: makeId(),
     text,
   };
 }
