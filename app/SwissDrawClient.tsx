@@ -38,7 +38,9 @@ import {
   type Settings,
   type Standing,
   type Tournament,
+  type TournamentState,
 } from "../lib/domain/tournament";
+import { qrModules } from "../lib/qr";
 
 const judgeActionLabels: Record<JudgeActionType, string> = {
   caution: "注意",
@@ -46,6 +48,20 @@ const judgeActionLabels: Record<JudgeActionType, string> = {
   "game-loss": "ゲーム敗北",
   "match-loss": "マッチ敗北",
   disqualification: "失格",
+};
+
+const tournamentStateLabels: Record<TournamentState, string> = {
+  setup: "準備中",
+  ready: "受付中",
+  running: "進行中",
+  complete: "終了",
+};
+
+const matchStatusLabels: Record<MatchStatus, string> = {
+  waiting: "待機",
+  active: "対戦中",
+  reported: "報告済",
+  forced: "裁定",
 };
 
 const activeTournamentKey = "swiss-draw-active-tournament";
@@ -114,30 +130,14 @@ function formatTime(totalSeconds: number | null) {
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
-function makeQrCells(seed: string) {
-  let hash = 0;
-  for (let index = 0; index < seed.length; index += 1) {
-    hash = (hash * 31 + seed.charCodeAt(index)) >>> 0;
-  }
-  return Array.from({ length: 21 * 21 }, (_, index) => {
-    const x = index % 21;
-    const y = Math.floor(index / 21);
-    const inFinder =
-      (x < 7 && y < 7) || (x > 13 && y < 7) || (x < 7 && y > 13);
-    if (inFinder) {
-      const localX = x < 7 ? x : x - 14;
-      const localY = y < 7 ? y : y - 14;
-      return (
-        localX === 0 ||
-        localX === 6 ||
-        localY === 0 ||
-        localY === 6 ||
-        (localX >= 2 && localX <= 4 && localY >= 2 && localY <= 4)
-      );
-    }
-    hash = (hash * 1664525 + 1013904223 + index) >>> 0;
-    return (hash & 3) === 0 || ((x * y + hash) % 11 === 0);
-  });
+function roundEndsAt(timeLimitMinutes: number): string | null {
+  return timeLimitMinutes > 0 ? new Date(Date.now() + timeLimitMinutes * 60_000).toISOString() : null;
+}
+
+function remainingSecondsFromEndsAt(endsAt: string | null | undefined): number | null {
+  if (!endsAt) return null;
+  const remaining = Math.round((new Date(endsAt).getTime() - Date.now()) / 1000);
+  return Math.max(0, remaining);
 }
 
 type SwissDrawClientProps = {
@@ -154,7 +154,7 @@ export default function SwissDrawClient({
   initialView,
 }: SwissDrawClientProps) {
   const [settings, setSettings] = useState<Settings>(defaultSettings);
-  const [participantText, setParticipantText] = useState(sampleNames.join("\n"));
+  const [participantText, setParticipantText] = useState("");
   const [view] = useState<"admin" | "participant">(() =>
     initialView ?? (readInitialSearchParam("view") === "participant" ? "participant" : "admin"),
   );
@@ -162,23 +162,35 @@ export default function SwissDrawClient({
     () => initialEventCode ?? readInitialSearchParam("event"),
   );
   const [eventLoadError, setEventLoadError] = useState("");
+  const [eventMissing, setEventMissing] = useState(false);
   const [isHydrated, setIsHydrated] = useState(false);
   const [isSetupExpanded, setIsSetupExpanded] = useState(true);
   const [selectedPlayerId, setSelectedPlayerId] = useState(
     () => initialPlayerId ?? readInitialSearchParam("player") ?? "P001",
   );
   const [registrationName, setRegistrationName] = useState("");
+  const [registrationNotice, setRegistrationNotice] = useState("");
+  const [playerConfirmed, setPlayerConfirmed] = useState(initialPlayerLocked);
   const [deckName, setDeckName] = useState("");
   const deckInputRef = useRef<HTMLInputElement>(null);
+  const participantCountInputRef = useRef<HTMLInputElement>(null);
+  const timeLimitInputRef = useRef<HTMLInputElement>(null);
+  const importFileInputRef = useRef<HTMLInputElement>(null);
   const [reportScores, setReportScores] = useState({ a: 0, b: 0 });
+  const [copyFeedback, setCopyFeedback] = useState(false);
+  const [settingsNotice, setSettingsNotice] = useState("");
+  const [matchQuery, setMatchQuery] = useState("");
+  const [showOpenMatchesOnly, setShowOpenMatchesOnly] = useState(false);
   const [timerRunning, setTimerRunning] = useState(false);
   const [timerSeconds, setTimerSeconds] = useState<number | null>(
     defaultSettings.timeLimitMinutes * 60,
   );
+  // Forces a re-render every second on the participant view so the shared clock stays fresh.
+  const [, setNowTick] = useState(0);
   const [tournament, setTournament] = useState<Tournament>({
     settings: defaultSettings,
     state: "setup",
-    players: parsePlayers(sampleNames.join("\n"), defaultSettings.participantCount),
+    players: [],
     rounds: [],
     events: [makeEvent("大会設定を作成中")],
   });
@@ -202,7 +214,7 @@ export default function SwissDrawClient({
   const shareUrl =
     typeof window === "undefined" || !tournament.settings.eventCode
       ? ""
-      : `${window.location.origin}${window.location.pathname}?view=participant&event=${tournament.settings.eventCode}`;
+      : `${window.location.origin}${window.location.pathname.replace(/index\.html$/, "")}?view=participant&event=${tournament.settings.eventCode}`;
   const selectedUrl =
     typeof window === "undefined" || !selectedPlayer
       ? ""
@@ -243,11 +255,38 @@ export default function SwissDrawClient({
     if (match.status === "reported" || match.status === "forced") {
       return match.timeRemainingSeconds;
     }
-    if (currentRound?.status === "active" && timerSeconds !== null) {
-      return timerSeconds + match.timeExtensionSeconds;
+    if (currentRound?.status === "active") {
+      if (view === "admin" && timerSeconds !== null) {
+        return timerSeconds + match.timeExtensionSeconds;
+      }
+      const shared = remainingSecondsFromEndsAt(currentRound.endsAt);
+      if (shared !== null) {
+        return shared + match.timeExtensionSeconds;
+      }
+      return null;
     }
     return match.timeRemainingSeconds;
   }
+
+  const timerExpired =
+    timerSeconds === 0 && currentRound?.status === "active" && !isComplete;
+  const normalizedMatchQuery = matchQuery.trim().toLowerCase();
+  const visibleMatches = (currentRound?.matches ?? []).filter((match) => {
+    if (
+      showOpenMatchesOnly &&
+      (match.status === "reported" || match.status === "forced")
+    ) {
+      return false;
+    }
+    if (!normalizedMatchQuery) return true;
+    const nameA = playerName(tournament.players, match.playerAId).toLowerCase();
+    const nameB = playerName(tournament.players, match.playerBId).toLowerCase();
+    return (
+      String(match.table) === normalizedMatchQuery.replace(/^t/, "") ||
+      nameA.includes(normalizedMatchQuery) ||
+      nameB.includes(normalizedMatchQuery)
+    );
+  });
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -261,20 +300,36 @@ export default function SwissDrawClient({
       setEventLoadError("");
       setTournament(stored);
       setSettings(stored.settings);
-      setTimerSeconds(
-        stored.settings.timeLimitMinutes > 0 ? stored.settings.timeLimitMinutes * 60 : null,
-      );
+      const storedRound = stored.rounds.at(-1);
+      const sharedRemaining =
+        storedRound?.status === "active" ? remainingSecondsFromEndsAt(storedRound.endsAt) : null;
+      if (sharedRemaining !== null) {
+        setTimerSeconds(sharedRemaining);
+        setTimerRunning(sharedRemaining > 0);
+      } else {
+        setTimerSeconds(
+          stored.settings.timeLimitMinutes > 0 ? stored.settings.timeLimitMinutes * 60 : null,
+        );
+      }
       setIsSetupExpanded(stored.state === "setup");
-      setSelectedPlayerId(
-        player && stored.players.some((storedPlayer) => storedPlayer.id === player)
-          ? player
-          : stored.players[0]?.id ?? "",
-      );
+      const playerMatched =
+        Boolean(player) && stored.players.some((storedPlayer) => storedPlayer.id === player);
+      setSelectedPlayerId(playerMatched && player ? player : stored.players[0]?.id ?? "");
+      setPlayerConfirmed((current) => current || playerMatched);
+      if (player && !playerMatched) {
+        setEventLoadError(
+          `URLのプレイヤーID ${player} が見つかりません。名前を選び直してください。`,
+        );
+      }
     } else if (player) {
       setSelectedPlayerId(player);
       if (eventCode) {
         setEventLoadError(`大会 ${eventCode} がこのブラウザに保存されていません。`);
+        setEventMissing(true);
       }
+    } else if (eventCode) {
+      setEventLoadError(`大会 ${eventCode} がこのブラウザに保存されていません。`);
+      setEventMissing(true);
     }
     setIsHydrated(true);
   }, []);
@@ -297,6 +352,7 @@ export default function SwissDrawClient({
           : readStoredTournament(eventCode);
       if (!stored) return;
       setEventLoadError("");
+      setEventMissing(false);
       setTournament(stored);
       setSettings(stored.settings);
       setSelectedPlayerId((current) =>
@@ -311,18 +367,43 @@ export default function SwissDrawClient({
   }, [isHydrated, requestedEventCode, tournament.settings.eventCode]);
 
   useEffect(() => {
-    if (!timerRunning || timerSeconds === null) return;
+    if (!timerRunning) return;
     const id = window.setInterval(() => {
       setTimerSeconds((current) => {
         if (current === null) return null;
-        if (current <= 1) {
-          return 0;
-        }
-        return current - 1;
+        return Math.max(0, current - 1);
       });
     }, 1000);
     return () => window.clearInterval(id);
+  }, [timerRunning]);
+
+  useEffect(() => {
+    if (!timerRunning || timerSeconds !== 0) return;
+    setTimerRunning(false);
+    setTournament((current) =>
+      current.rounds.at(-1)?.status === "active"
+        ? {
+            ...current,
+            events: [
+              makeEvent(`ラウンド${current.rounds.at(-1)?.number} 時間切れ`),
+              ...current.events,
+            ].slice(0, 30),
+          }
+        : current,
+    );
   }, [timerRunning, timerSeconds]);
+
+  useEffect(() => {
+    setReportScores({ a: 0, b: 0 });
+  }, [selectedMatch?.id, selectedPlayerId]);
+
+  useEffect(() => {
+    if (view !== "participant") return;
+    const id = window.setInterval(() => {
+      setNowTick((tick) => tick + 1);
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [view]);
 
   useEffect(() => {
     setDeckName(selectedPlayer?.deckName ?? "");
@@ -345,6 +426,11 @@ export default function SwissDrawClient({
   }
 
   function issueTournament() {
+    if (tournament.state !== "setup") return;
+    if (settings.inputMode !== "qr" && countEntryNames(participantText) === 0) {
+      window.alert("参加者名を入力してください（1行に1名）。");
+      return;
+    }
     const nextSettings = {
       ...settings,
       participantCount: Math.max(
@@ -380,22 +466,88 @@ export default function SwissDrawClient({
 
   function createTournament(event: FormEvent) {
     event.preventDefault();
+    // Guard: pressing Enter in a settings input must never re-issue a running tournament.
+    if (tournament.state !== "setup") return;
     issueTournament();
+  }
+
+  function showSettingsNotice(text: string) {
+    setSettingsNotice(text);
+    window.setTimeout(() => setSettingsNotice(""), 2500);
   }
 
   function saveSettings() {
     localStorage.setItem("swiss-draw-settings", JSON.stringify(settings));
+    showSettingsNotice("既定値として保存しました");
   }
 
   function loadSettings() {
     const saved = localStorage.getItem("swiss-draw-settings");
-    if (!saved) return;
-    const loaded = JSON.parse(saved) as Settings;
-    setSettings({
-      ...loaded,
-      bestOf: normalizeBestOf(loaded.bestOf),
-      swissRounds: loaded.swissRounds ?? recommendedSwissRounds(loaded.participantCount),
+    if (!saved) {
+      showSettingsNotice("保存された設定がありません");
+      return;
+    }
+    try {
+      const loaded = JSON.parse(saved) as Settings;
+      setSettings({
+        ...loaded,
+        bestOf: normalizeBestOf(loaded.bestOf),
+        swissRounds: loaded.swissRounds ?? recommendedSwissRounds(loaded.participantCount),
+      });
+      showSettingsNotice("既定値を読み込みました");
+    } catch {
+      showSettingsNotice("保存データを読み込めませんでした");
+    }
+  }
+
+  function startNewTournament() {
+    if (
+      !window.confirm(
+        "新しい大会の設定を開始します。現在の大会データはこのブラウザに保存されたまま残ります。よろしいですか？",
+      )
+    ) {
+      return;
+    }
+    const nextSettings = { ...defaultSettings, eventCode: "" };
+    setSettings(nextSettings);
+    setParticipantText("");
+    setTournament({
+      settings: nextSettings,
+      state: "setup",
+      players: [],
+      rounds: [],
+      events: [makeEvent("大会設定を作成中")],
     });
+    setTimerRunning(false);
+    setTimerSeconds(nextSettings.timeLimitMinutes * 60);
+    setIsSetupExpanded(true);
+  }
+
+  function importTournamentJson(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(String(reader.result)) as { tournament?: Tournament } & Tournament;
+        const restored = normalizeTournament(parsed.tournament ?? parsed);
+        if (!restored.settings?.eventCode || !Array.isArray(restored.players)) {
+          throw new Error("invalid");
+        }
+        setTournament({
+          ...restored,
+          events: [makeEvent("バックアップJSONから復元"), ...restored.events].slice(0, 30),
+        });
+        setSettings(restored.settings);
+        setSelectedPlayerId(restored.players[0]?.id ?? "");
+        setEventLoadError("");
+        setIsSetupExpanded(false);
+      } catch {
+        window.alert("JSONを読み込めませんでした。全結果JSONのバックアップファイルを指定してください。");
+      }
+    };
+    reader.readAsText(file);
   }
 
   function activateRound(round: Round, nextSettings: Settings): Round {
@@ -412,14 +564,21 @@ export default function SwissDrawClient({
 
   async function copyShareUrl() {
     if (!shareUrl) return;
+    if (!navigator.clipboard) {
+      window.prompt("URLをコピーしてください", shareUrl);
+      return;
+    }
     try {
-      await navigator.clipboard?.writeText(shareUrl);
+      await navigator.clipboard.writeText(shareUrl);
     } catch {
       window.prompt("URLをコピーしてください", shareUrl);
+      return;
     }
+    setCopyFeedback(true);
+    window.setTimeout(() => setCopyFeedback(false), 2000);
     setTournament((current) => ({
       ...current,
-      events: [makeEvent("参加者URLをコピー"), ...current.events].slice(0, 12),
+      events: [makeEvent("参加者URLをコピー"), ...current.events].slice(0, 30),
     }));
   }
 
@@ -463,14 +622,17 @@ export default function SwissDrawClient({
     }
     setTournament((current) => ({
       ...current,
-      events: [makeEvent("結果JSONをコピー"), ...current.events].slice(0, 12),
+      events: [makeEvent("結果JSONをコピー"), ...current.events].slice(0, 30),
     }));
   }
 
   function registerParticipant(event: FormEvent) {
     event.preventDefault();
     const name = registrationName.trim();
-    if (!name) return;
+    if (!name) {
+      setRegistrationNotice("参加者名を入力してください。");
+      return;
+    }
     setTournament((current) => {
       if (current.state === "running" || current.state === "complete") return current;
       const nextId = `P${String(current.players.length + 1).padStart(3, "0")}`;
@@ -492,10 +654,12 @@ export default function SwissDrawClient({
         ...current,
         settings: nextSettings,
         players: nextPlayers,
-        events: [makeEvent(`${name} が参加登録`), ...current.events].slice(0, 12),
+        events: [makeEvent(`${name} が参加登録`), ...current.events].slice(0, 30),
       };
     });
     setRegistrationName("");
+    setRegistrationNotice(`${name} さんとして登録しました。`);
+    setPlayerConfirmed(true);
   }
 
   function updatePlayer(playerId: string, updater: (player: Player) => Player) {
@@ -513,7 +677,7 @@ export default function SwissDrawClient({
       events: [
         makeEvent(`${selectedPlayer.name} ${checkedIn ? "チェックイン" : "チェックイン取消"}`),
         ...current.events,
-      ].slice(0, 12),
+      ].slice(0, 30),
     }));
   }
 
@@ -528,7 +692,7 @@ export default function SwissDrawClient({
     }));
     setTournament((current) => ({
       ...current,
-      events: [makeEvent(`${selectedPlayer.name} デッキ登録更新`), ...current.events].slice(0, 12),
+      events: [makeEvent(`${selectedPlayer.name} デッキ登録更新`), ...current.events].slice(0, 30),
     }));
   }
 
@@ -550,12 +714,14 @@ export default function SwissDrawClient({
     }));
     setTournament((current) => ({
       ...current,
-      events: [makeEvent(`${selectedPlayer.name} デッキ画像登録`), ...current.events].slice(0, 12),
+      events: [makeEvent(`${selectedPlayer.name} デッキ画像登録`), ...current.events].slice(0, 30),
     }));
   }
 
   function startRound() {
-    if (missingDeckPlayers.length > 0) {
+    if (currentRound?.status === "active") return;
+    const deckFeatureInUse = deckRegisteredPlayers.length > 0;
+    if (deckFeatureInUse && tournament.rounds.length === 0 && missingDeckPlayers.length > 0) {
       const sampleMissing = missingDeckPlayers
         .slice(0, 5)
         .map((player) => player.name)
@@ -576,7 +742,10 @@ export default function SwissDrawClient({
           ? createRound(current.players, current.rounds, current.settings)
           : current.rounds.at(-1);
       if (!round) return current;
-      const activeRound = activateRound(round, current.settings);
+      const activeRound = {
+        ...activateRound(round, current.settings),
+        endsAt: roundEndsAt(current.settings.timeLimitMinutes),
+      };
       const rounds =
         current.rounds.length === 0 ||
         current.rounds.at(-1)?.status === "complete"
@@ -588,7 +757,7 @@ export default function SwissDrawClient({
         ...current,
         state: "running",
         rounds,
-        events: [makeEvent(`Round ${activeRound.number} start`), ...current.events].slice(0, 12),
+        events: [makeEvent(`ラウンド${activeRound.number} 開始`), ...current.events].slice(0, 30),
       };
     });
     setTimerSeconds(
@@ -603,7 +772,16 @@ export default function SwissDrawClient({
     const hasResults = currentRound.matches.some(
       (match) => match.status === "reported" || match.status === "forced",
     );
-    if (hasResults && !window.confirm("このラウンドの結果を破棄して再マッチングしますか？")) {
+    const judgeActionCount = currentRound.matches.reduce(
+      (total, match) => total + match.judgeActions.length,
+      0,
+    );
+    const warningSuffix =
+      judgeActionCount > 0 ? `\n※このラウンドのジャッジ記録 ${judgeActionCount} 件も破棄されます。` : "";
+    if (
+      (hasResults || judgeActionCount > 0) &&
+      !window.confirm(`このラウンドの結果を破棄して再マッチングしますか？${warningSuffix}`)
+    ) {
       return;
     }
     setTournament((current) => {
@@ -613,14 +791,19 @@ export default function SwissDrawClient({
         ...current,
         rounds: [...completedRounds, {
           ...nextRound,
-          status: "active",
+          status: "active" as const,
+          endsAt: roundEndsAt(current.settings.timeLimitMinutes),
           matches: nextRound.matches.map((match) =>
-            match.status === "waiting" ? { ...match, status: "active" } : match,
+            match.status === "waiting" ? { ...match, status: "active" as const } : match,
           ),
         }],
-        events: [makeEvent(`Round ${nextRound.number} rematched`), ...current.events].slice(0, 12),
+        events: [makeEvent(`ラウンド${nextRound.number} を再組合せ`), ...current.events].slice(0, 30),
       };
     });
+    setTimerSeconds(
+      tournament.settings.timeLimitMinutes > 0 ? tournament.settings.timeLimitMinutes * 60 : null,
+    );
+    setTimerRunning(tournament.settings.timeLimitMinutes > 0);
   }
 
   function extendMatchTime(matchId: string, minutes: number) {
@@ -644,7 +827,7 @@ export default function SwissDrawClient({
                   : match,
               ),
             })),
-            events: [makeEvent(`${matchId} +${minutes}min extension`), ...current.events].slice(0, 12),
+            events: [makeEvent(`${matchId} を${minutes}分延長`), ...current.events].slice(0, 30),
           }),
     }));
   }
@@ -676,7 +859,7 @@ export default function SwissDrawClient({
       return {
         ...current,
         rounds: nextRounds,
-        events: [makeEvent(`${winner} 勝利 ${scoreA}-${scoreB}`), ...current.events].slice(0, 12),
+        events: [makeEvent(`${winner} 勝利 ${scoreA}-${scoreB}`), ...current.events].slice(0, 30),
       };
     });
   }
@@ -701,7 +884,7 @@ export default function SwissDrawClient({
             events: [
               makeEvent(`${playerName(current.players, firstPlayerId)} を先攻に設定`),
               ...current.events,
-            ].slice(0, 12),
+            ].slice(0, 30),
           }),
     }));
   }
@@ -736,7 +919,7 @@ export default function SwissDrawClient({
       return {
         ...current,
         rounds: nextRounds,
-        events: [makeEvent(`${matchId} 両者敗北`), ...current.events].slice(0, 12),
+        events: [makeEvent(`${matchId} 両者敗北`), ...current.events].slice(0, 30),
       };
     });
   }
@@ -776,7 +959,7 @@ export default function SwissDrawClient({
       events: [
         makeEvent(`${playerName(current.players, playerId)}: ${judgeActionLabels[type]}`),
         ...current.events,
-      ].slice(0, 12),
+      ].slice(0, 30),
     }));
 
     if (!match.playerBId) return;
@@ -808,6 +991,14 @@ export default function SwissDrawClient({
   }
 
   function nextRoundOrFinish() {
+    if (
+      finalRoundReached &&
+      !window.confirm(
+        "大会を終了して最終順位を確定します。以後、結果の修正はできません。よろしいですか？",
+      )
+    ) {
+      return;
+    }
     setTournament((current) => {
       const completedRounds = current.rounds.map((round, index) =>
         index === current.rounds.length - 1 ? { ...round, status: "complete" as const } : round,
@@ -817,18 +1008,21 @@ export default function SwissDrawClient({
           ...current,
           state: "complete",
           rounds: completedRounds,
-          events: [makeEvent("最終順位を確定"), ...current.events].slice(0, 12),
+          events: [makeEvent("最終順位を確定"), ...current.events].slice(0, 30),
         };
       }
-      const nextRound = activateRound(
-        createRound(current.players, completedRounds, current.settings),
-        current.settings,
-      );
+      const nextRound = {
+        ...activateRound(
+          createRound(current.players, completedRounds, current.settings),
+          current.settings,
+        ),
+        endsAt: roundEndsAt(current.settings.timeLimitMinutes),
+      };
       return {
         ...current,
         state: "running",
         rounds: [...completedRounds, nextRound],
-        events: [makeEvent(`Round ${nextRound.number} start`), ...current.events].slice(0, 12),
+        events: [makeEvent(`ラウンド${nextRound.number} 開始`), ...current.events].slice(0, 30),
       };
     });
     setTimerSeconds(
@@ -837,13 +1031,30 @@ export default function SwissDrawClient({
     setTimerRunning(tournament.settings.timeLimitMinutes > 0);
   }
 
+  function setRoundEndsAt(endsAt: string | null) {
+    setTournament((current) => {
+      const lastRound = current.rounds.at(-1);
+      if (!lastRound || lastRound.status !== "active") return current;
+      return {
+        ...current,
+        rounds: current.rounds.map((round, index) =>
+          index === current.rounds.length - 1 ? { ...round, endsAt } : round,
+        ),
+      };
+    });
+  }
+
   function toggleTimerStop() {
     if (timerRunning) {
       if (!window.confirm("タイマーを停止しますか？")) return;
       setTimerRunning(false);
+      setRoundEndsAt(null);
       return;
     }
     setTimerRunning(true);
+    if (timerSeconds !== null) {
+      setRoundEndsAt(new Date(Date.now() + timerSeconds * 1000).toISOString());
+    }
   }
 
   function submitParticipantReport(event: FormEvent) {
@@ -854,6 +1065,14 @@ export default function SwissDrawClient({
     const scoreB = isA ? reportScores.b : reportScores.a;
     if (scoreA === scoreB || Math.max(scoreA, scoreB) !== targetScore) {
       window.alert(`勝者のスコアを ${targetScore} にしてください。`);
+      return;
+    }
+    const selfName = playerName(tournament.players, selectedPlayerId);
+    if (
+      !window.confirm(
+        `${selfName} ${reportScores.a} - ${reportScores.b} ${selectedOpponentName}\nこの結果で報告します。報告後の変更はスタッフのみ可能です。よろしいですか？`,
+      )
+    ) {
       return;
     }
     reportMatch(selectedMatch.id, scoreA, scoreB);
@@ -876,6 +1095,12 @@ export default function SwissDrawClient({
     );
   }
 
+  if (!isHydrated) {
+    // Render the same minimal shell on server and first client paint to avoid hydration
+    // mismatches caused by query-parameter-driven view switching on the static export.
+    return <main className="appShell" aria-busy="true" />;
+  }
+
   return (
     <main className={view === "participant" ? "appShell participantShell" : "appShell adminShell"}>
       <section className="topBar">
@@ -896,25 +1121,28 @@ export default function SwissDrawClient({
       <section className="statusRail">
         <div>
           <span>状態</span>
-          <strong>{tournament.state.toUpperCase()}</strong>
+          <strong>{tournamentStateLabels[tournament.state]}</strong>
         </div>
         <div>
-          <span>Round</span>
+          <span>ラウンド</span>
           <strong>
             {currentRound?.number ?? "-"} / {tournament.settings.swissRounds}
           </strong>
         </div>
-        <div>
-          <span>Timer</span>
-          <strong>{formatTime(timerSeconds)}</strong>
+        <div className={timerExpired ? "timeUp" : undefined}>
+          <span>残り時間</span>
+          <strong>{timerExpired ? "時間切れ" : formatTime(timerSeconds)}</strong>
         </div>
         <div>
-          <span>Players</span>
+          <span>参加者</span>
           <strong>{tournament.players.length}</strong>
         </div>
         <div>
           <span>BO</span>
-          <strong>{tournament.settings.bestOf}</strong>
+          <strong>
+            {tournament.settings.bestOf}
+            <small>（{seriesTarget(tournament.settings.bestOf)}本先取）</small>
+          </strong>
         </div>
       </section>
 
@@ -930,27 +1158,36 @@ export default function SwissDrawClient({
               </div>
               <div className="buttonRow">
                 {tournament.state !== "setup" ? (
-                  <button type="button" onClick={() => setIsSetupExpanded((current) => !current)}>
-                    {showFullSetup ? "閉じる" : "編集"}
-                  </button>
-                ) : null}
-                {showFullSetup ? (
                   <>
-                    {tournament.state === "setup" ? (
-                      <button className="headerPrimary" onClick={issueTournament} type="button">
-                        URL発行
-                      </button>
-                    ) : null}
-                    <button type="button" onClick={saveSettings}>
-                      保存
+                    <button type="button" onClick={() => setIsSetupExpanded((current) => !current)}>
+                      {showFullSetup ? "閉じる" : "設定を確認"}
                     </button>
-                    <button type="button" onClick={loadSettings}>
-                      読込
+                    <button type="button" onClick={startNewTournament}>
+                      新規大会
                     </button>
                   </>
                 ) : null}
+                {showFullSetup && tournament.state === "setup" ? (
+                  <>
+                    <button className="headerPrimary" onClick={issueTournament} type="button">
+                      この内容で大会を作成
+                    </button>
+                    <button type="button" onClick={saveSettings}>
+                      設定を保存
+                    </button>
+                    <button type="button" onClick={loadSettings}>
+                      設定を読込
+                    </button>
+                  </>
+                ) : null}
+                {settingsNotice ? <span className="settingsNotice">{settingsNotice}</span> : null}
               </div>
             </div>
+            {showFullSetup && tournament.state !== "setup" ? (
+              <p className="fieldNote">
+                大会は作成済みです。ここでの変更は作成済みの大会には反映されません。
+              </p>
+            ) : null}
 
             {!showFullSetup ? (
               <div className="issuedBox compactIssuedBox">
@@ -959,7 +1196,7 @@ export default function SwissDrawClient({
                   <strong>{shareUrl}</strong>
                 </div>
                 <button type="button" onClick={copyShareUrl}>
-                  コピー
+                  {copyFeedback ? "コピーしました" : "コピー"}
                 </button>
               </div>
             ) : null}
@@ -992,13 +1229,16 @@ export default function SwissDrawClient({
                     ))}
                     <button
                       className={!participantCountOptions.includes(settings.participantCount) ? "active" : ""}
+                      onClick={() => participantCountInputRef.current?.focus()}
                       type="button"
                     >
                       自由入力
                     </button>
                   </div>
                   <input
+                    aria-label="参加者数（自由入力）"
                     min={2}
+                    ref={participantCountInputRef}
                     type="number"
                     value={settings.participantCount}
                     onChange={(event) =>
@@ -1035,13 +1275,16 @@ export default function SwissDrawClient({
                     ))}
                     <button
                       className={!timeLimitOptions.includes(settings.timeLimitMinutes) ? "active" : ""}
+                      onClick={() => timeLimitInputRef.current?.focus()}
                       type="button"
                     >
                       自由入力
                     </button>
                   </div>
                   <input
+                    aria-label="制限時間（分・自由入力）"
                     min={0}
+                    ref={timeLimitInputRef}
                     type="number"
                     value={settings.timeLimitMinutes}
                     onChange={(event) =>
@@ -1049,28 +1292,47 @@ export default function SwissDrawClient({
                     }
                   />
                 </div>
-                <div className="segmented">
-                  {(Object.keys(inputModeLabels) as InputMode[]).map((mode) => (
-                    <button
-                      className={settings.inputMode === mode ? "active" : ""}
-                      key={mode}
-                      onClick={() => updateSettings({ inputMode: mode })}
-                      type="button"
-                    >
-                      {inputModeLabels[mode]}
-                    </button>
-                  ))}
+                <div className="optionBlock">
+                  <span>参加者の集め方</span>
+                  <div className="segmented optionButtons">
+                    {(Object.keys(inputModeLabels) as InputMode[]).map((mode) => (
+                      <button
+                        className={settings.inputMode === mode ? "active" : ""}
+                        key={mode}
+                        onClick={() => updateSettings({ inputMode: mode })}
+                        type="button"
+                      >
+                        {inputModeLabels[mode]}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="modeHint">
+                    {settings.inputMode === "paste"
+                      ? "運営が下の欄に参加者名を入力します。"
+                      : settings.inputMode === "qr"
+                        ? "参加者が参加者画面から自分で名前を登録します（名前欄は空のままでも作成できます）。"
+                        : "事前登録IDでの参照は準備中です。現在はExcelコピーをご利用ください。"}
+                  </p>
                 </div>
                 <label className="participantsField">
                   参加者名
                   <textarea
+                    placeholder={"1行に1名。Excelの名前列をコピーして貼り付けできます。\n例:\n山田 太郎\n佐藤 花子"}
                     value={participantText}
                     onChange={(event) => updateParticipantText(event.target.value)}
                     rows={5}
                   />
                 </label>
+                {tournament.state === "setup" ? (
+                  <button
+                    type="button"
+                    onClick={() => updateParticipantText(sampleNames.join("\n"))}
+                  >
+                    サンプル名を入力（動作確認用）
+                  </button>
+                ) : null}
                 <div className="optionBlock">
-                  <span>BO</span>
+                  <span>BO（何本勝負か）</span>
                   <div className="segmented optionButtons">
                     {bestOfOptions.map((value) => (
                       <button
@@ -1083,6 +1345,7 @@ export default function SwissDrawClient({
                       </button>
                     ))}
                   </div>
+                  <p className="modeHint">BO{settings.bestOf} = {seriesTarget(settings.bestOf)}本先取でマッチ勝利です。</p>
                 </div>
                 <div className="optionBlock">
                   <span>エリミネーション</span>
@@ -1106,9 +1369,10 @@ export default function SwissDrawClient({
                       onChange={(event) => updateSettings({ hasEntryFee: event.target.checked })}
                       type="checkbox"
                     />
-                    参加費あり
+                    参加費あり（円）
                   </label>
                   <input
+                    aria-label="参加費（円）"
                     disabled={!settings.hasEntryFee}
                     min={0}
                     type="number"
@@ -1117,9 +1381,12 @@ export default function SwissDrawClient({
                   />
                 </div>
                 {tournament.state === "setup" ? (
-                  <button className="primaryAction" onClick={issueTournament} type="button">
-                    設定してURL発行
-                  </button>
+                  <>
+                    <button className="primaryAction" onClick={issueTournament} type="button">
+                      この内容で大会を作成
+                    </button>
+                    <p className="fieldNote">作成すると参加者用URLとQRコードが発行されます。</p>
+                  </>
                 ) : null}
               </>
             ) : null}
@@ -1136,12 +1403,15 @@ export default function SwissDrawClient({
                   disabled={
                     tournament.state === "setup" ||
                     tournament.players.length < 2 ||
-                    tournament.state === "complete"
+                    tournament.state === "complete" ||
+                    currentRound?.status === "active"
                   }
                   onClick={startRound}
                   type="button"
                 >
-                  ラウンド開始
+                  {currentRound?.status === "active"
+                    ? `ラウンド${currentRound.number} 進行中`
+                    : `ラウンド${(currentRound?.number ?? 0) + 1} を開始`}
                 </button>
                 <button
                   className="dangerButton"
@@ -1160,16 +1430,21 @@ export default function SwissDrawClient({
             {tournament.state === "setup" ? (
               <div className="emptyState compactEmpty">URL発行後に参加者URLを表示します</div>
             ) : (
-              <div className="shareGrid">
-                <div>
-                  <span>参加者URL</span>
-                  <strong>{shareUrl}</strong>
+              <>
+                <div className="shareGrid">
+                  <div>
+                    <span>参加者URL</span>
+                    <strong>{shareUrl}</strong>
+                  </div>
+                  <Qr seed={shareUrl} />
+                  <button type="button" onClick={copyShareUrl}>
+                    {copyFeedback ? "コピーしました" : "コピー"}
+                  </button>
                 </div>
-                <Qr seed={shareUrl} />
-                <button type="button" onClick={copyShareUrl}>
-                  コピー
-                </button>
-              </div>
+                <p className="fieldNote">
+                  ※大会データはこのブラウザにのみ保存されます。参加者URL/QRは同じ端末・同じブラウザの別タブで開いた場合に動作します。
+                </p>
+              </>
             )}
 
             {tournament.state !== "setup" ? (
@@ -1196,9 +1471,34 @@ export default function SwissDrawClient({
               </section>
             ) : null}
 
+            {currentRound && currentRound.matches.length > 0 ? (
+              <div className="matchFilterBar">
+                <input
+                  aria-label="卓番号またはプレイヤー名で絞り込み"
+                  placeholder="卓番号・プレイヤー名で検索"
+                  value={matchQuery}
+                  onChange={(event) => setMatchQuery(event.target.value)}
+                />
+                <button
+                  className={showOpenMatchesOnly ? "active" : ""}
+                  onClick={() => setShowOpenMatchesOnly((current) => !current)}
+                  type="button"
+                >
+                  未報告のみ{showOpenMatchesOnly ? ` (${openMatchCount})` : ""}
+                </button>
+              </div>
+            ) : null}
+
             <div className="matchList">
               {currentRound ? (
-                currentRound.matches.map((match) => (
+                visibleMatches.length === 0 ? (
+                  <div className="emptyState">
+                    {currentRound.matches.length === 0
+                      ? "マッチがありません"
+                      : "条件に一致するマッチがありません"}
+                  </div>
+                ) : (
+                visibleMatches.map((match) => (
                   <article className="matchRow" key={match.id}>
                     <div className="tableBadge">T{match.table}</div>
                     <div className="matchPlayers">
@@ -1218,15 +1518,25 @@ export default function SwissDrawClient({
                       <span>
                         {match.scoreA ?? "-"} - {match.scoreB ?? "-"}
                       </span>
-                      <em>{match.status}</em>
+                      <em>{matchStatusLabels[match.status]}</em>
                       {isStairPairing(match) ? (
-                        <b className="pairingBadge">階段</b>
+                        <b className="pairingBadge" title="勝敗数の異なるプレイヤー同士の組み合わせです">階段</b>
                       ) : null}
-                      <strong className="tableTime">{formatTime(matchDisplaySeconds(match))}</strong>
+                      <strong
+                        className={
+                          matchDisplaySeconds(match) === 0 &&
+                          match.status !== "reported" &&
+                          match.status !== "forced"
+                            ? "tableTime expired"
+                            : "tableTime"
+                        }
+                      >
+                        {formatTime(matchDisplaySeconds(match))}
+                      </strong>
                     </div>
                     {match.playerBId ? (
                       <AdminMatchControls
-                        key={`${match.id}:${match.scoreA ?? "-"}:${match.scoreB ?? "-"}:${targetScore}`}
+                        key={match.id}
                         disabled={isComplete}
                         match={match}
                         players={tournament.players}
@@ -1241,6 +1551,7 @@ export default function SwissDrawClient({
                     ) : null}
                   </article>
                 ))
+                )
               ) : (
                 <div className="emptyState">ラウンド未開始</div>
               )}
@@ -1253,7 +1564,7 @@ export default function SwissDrawClient({
                 onClick={nextRoundOrFinish}
                 type="button"
               >
-                {finalRoundReached ? "大会結果へ" : "次のラウンドへ"}
+                {finalRoundReached ? "大会を終了して結果を確定" : "次のラウンドへ"}
               </button>
             ) : null}
             <p className="actionHint">
@@ -1261,7 +1572,7 @@ export default function SwissDrawClient({
                 ? openMatchCount > 0
                   ? `未報告 ${openMatchCount} マッチ`
                   : finalRoundReached
-                    ? "全マッチ報告済み。大会結果を確定できます。"
+                    ? "全マッチ報告済み。大会を終了すると以後の修正はできません。"
                     : "全マッチ報告済み。次のラウンドへ進めます。"
                 : "ラウンド開始で最初の対戦表を作成します。"}
             </p>
@@ -1292,9 +1603,20 @@ export default function SwissDrawClient({
               <button disabled={tournament.state === "setup"} onClick={copyResultsJson} type="button">
                 JSONコピー
               </button>
+              <button onClick={() => importFileInputRef.current?.click()} type="button">
+                JSONから復元
+              </button>
+              <input
+                accept="application/json,.json"
+                aria-label="バックアップJSONを選択"
+                hidden
+                onChange={importTournamentJson}
+                ref={importFileInputRef}
+                type="file"
+              />
             </div>
             <p className="exportNote">
-              外部提出・バックアップは全結果JSON、表計算での確認は順位CSVを使います。
+              外部提出・バックアップは全結果JSON、表計算での確認は順位CSVを使います。ブラウザのデータが消えた場合は「JSONから復元」でバックアップを読み込めます。
             </p>
           </section>
 
@@ -1305,6 +1627,68 @@ export default function SwissDrawClient({
             players={tournament.players}
           />
         </section>
+      ) : eventMissing ? (
+        <section className="workspace participantGrid">
+          <section className="panel noticePanel">
+            <strong>この大会のデータが見つかりません</strong>
+            <p>
+              大会コード: {requestedEventCode ?? "不明"}
+            </p>
+            <p>
+              大会データは運営端末のブラウザにのみ保存されています。このURLは運営と同じ端末・同じブラウザで開いた場合にのみ表示できます。
+            </p>
+            <p>会場では受付またはスタッフに声をかけて、対戦表を確認してください。</p>
+          </section>
+        </section>
+      ) : view === "participant" && !playerConfirmed && tournament.players.length > 0 ? (
+        <section className="workspace participantGrid">
+          <section className="panel noticePanel">
+            <strong>あなたの名前を選んでください</strong>
+            <p>結果報告やチェックインは選んだ本人として記録されます。</p>
+            <div className="playerConfirmBox">
+              <select
+                aria-label="参加者を選択"
+                value={selectedPlayerId}
+                onChange={(event) => setSelectedPlayerId(event.target.value)}
+              >
+                {tournament.players.map((player) => (
+                  <option key={player.id} value={player.id}>
+                    {player.id} / {player.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                className="primaryAction"
+                type="button"
+                onClick={() => {
+                  const chosen = tournament.players.find((player) => player.id === selectedPlayerId);
+                  if (!chosen) return;
+                  if (window.confirm(`${chosen.name} さんとして参加します。よろしいですか？`)) {
+                    setPlayerConfirmed(true);
+                  }
+                }}
+              >
+                この名前で参加する
+              </button>
+            </div>
+            {tournament.settings.inputMode === "qr" &&
+            (tournament.state === "setup" || tournament.state === "ready") ? (
+              <>
+                <p>リストに名前がない場合は、ここから参加登録できます。</p>
+                <form className="joinBox" onSubmit={registerParticipant}>
+                  <input
+                    aria-label="参加者名"
+                    placeholder="参加者名"
+                    value={registrationName}
+                    onChange={(event) => setRegistrationName(event.target.value)}
+                  />
+                  <button type="submit">参加登録</button>
+                </form>
+                {registrationNotice ? <p className="fieldNote">{registrationNotice}</p> : null}
+              </>
+            ) : null}
+          </section>
+        </section>
       ) : (
         <section className="workspace participantGrid">
           <section className="panel participantInfoPanel">
@@ -1312,6 +1696,7 @@ export default function SwissDrawClient({
               <p className="eyebrow">参加者</p>
               {initialPlayerLocked ? null : (
                 <select
+                  aria-label="参加者を選択"
                   value={selectedPlayerId}
                   onChange={(event) => setSelectedPlayerId(event.target.value)}
                 >
@@ -1324,25 +1709,34 @@ export default function SwissDrawClient({
               )}
             </div>
 
-            {tournament.settings.inputMode === "qr" && tournament.state !== "running" ? (
-              <form className="joinBox" onSubmit={registerParticipant}>
-                <input
-                  placeholder="参加者名"
-                  value={registrationName}
-                  onChange={(event) => setRegistrationName(event.target.value)}
-                />
-                <button type="submit">Join</button>
-              </form>
+            {tournament.settings.inputMode === "qr" &&
+            (tournament.state === "setup" || tournament.state === "ready") ? (
+              <>
+                <form className="joinBox" onSubmit={registerParticipant}>
+                  <input
+                    aria-label="参加者名"
+                    placeholder="参加者名"
+                    value={registrationName}
+                    onChange={(event) => setRegistrationName(event.target.value)}
+                  />
+                  <button type="submit">参加登録</button>
+                </form>
+                {registrationNotice ? <p className="fieldNote">{registrationNotice}</p> : null}
+              </>
             ) : null}
 
             {selectedPlayer ? (
               <div className="identityLine">
                 <strong>{selectedPlayer.name}</strong>
                 <span>{selectedPlayer.id}</span>
-                <small>{selectedStanding ? `${selectedStanding.matchPoints}MP ${selectedStanding.wins}-${selectedStanding.losses}` : "0MP 0-0"}</small>
+                <small>
+                  {selectedStanding
+                    ? `${selectedStanding.wins}勝${selectedStanding.losses}敗・勝ち点${selectedStanding.matchPoints}`
+                    : "0勝0敗・勝ち点0"}
+                </small>
               </div>
             ) : (
-              <div className="emptyState">No player selected</div>
+              <div className="emptyState">参加者が選択されていません</div>
             )}
 
             {selectedPlayer ? (
@@ -1384,6 +1778,9 @@ export default function SwissDrawClient({
                     登録
                   </button>
                 </form>
+                <p className="fieldNote">
+                  ※デッキ画像はこの端末での記録のみで、運営には送信されません。
+                </p>
               </div>
             ) : null}
           </section>
@@ -1396,17 +1793,41 @@ export default function SwissDrawClient({
               </a>
             </div>
 
+            {isComplete && selectedStanding ? (
+              <div className="completeBanner">
+                <strong>大会終了</strong>
+                <span>
+                  あなたの最終成績: {" "}
+                  {standings.filter((standing) => !standing.disqualified).findIndex((standing) => standing.id === selectedPlayerId) + 1}
+                  位（{selectedStanding.wins}勝{selectedStanding.losses}敗）
+                </span>
+              </div>
+            ) : null}
+
             {selectedMatch && selectedPlayer && selectedMatch.playerBId ? (
               <form className="reportBox" onSubmit={submitParticipantReport}>
                 <div className="matchSummary">
                   <strong>T{selectedMatch.table}</strong>
-                  <span>R{currentRound?.number ?? "-"}</span>
-                  <b>{formatTime(matchDisplaySeconds(selectedMatch))}</b>
+                  <span>ラウンド{currentRound?.number ?? "-"}</span>
+                  <b>
+                    {matchDisplaySeconds(selectedMatch) === null &&
+                    currentRound?.status === "active" &&
+                    tournament.settings.timeLimitMinutes > 0
+                      ? "タイマー停止中"
+                      : formatTime(matchDisplaySeconds(selectedMatch))}
+                  </b>
                 </div>
                 <div className="opponentLine">
                   <span>相手</span>
                   <strong>{selectedOpponentName}</strong>
-                  <small>{selectedMatch.pairingRecordA} / {selectedMatch.pairingRecordB}</small>
+                  <small>
+                    自分 {selectedMatch.playerAId === selectedPlayerId
+                      ? selectedMatch.pairingRecordA
+                      : selectedMatch.pairingRecordB}{" "}
+                    / 相手 {selectedMatch.playerAId === selectedPlayerId
+                      ? selectedMatch.pairingRecordB
+                      : selectedMatch.pairingRecordA}
+                  </small>
                 </div>
                 <div className="turnOrderBox">
                   <span>先攻/後攻</span>
@@ -1458,20 +1879,20 @@ export default function SwissDrawClient({
                 ) : null}
                 {canParticipantReport ? (
                   <>
-                    <label className="scoreLine">
+                    <div className="scoreLine">
                       <span>自分</span>
                       <strong>{selectedPlayer.name}</strong>
                       {scoreButtons(reportScores.a, (score) =>
                         setReportScores((current) => ({ ...current, a: score })),
                       )}
-                    </label>
-                    <label className="scoreLine">
+                    </div>
+                    <div className="scoreLine">
                       <span>相手</span>
                       <strong>{selectedOpponentName}</strong>
                       {scoreButtons(reportScores.b, (score) =>
                         setReportScores((current) => ({ ...current, b: score })),
                       )}
-                    </label>
+                    </div>
                     <div className="reportPreview">
                       {selectedPlayer.name} {reportScores.a} - {reportScores.b} {selectedOpponentName}
                     </div>
@@ -1487,11 +1908,16 @@ export default function SwissDrawClient({
                 )}
               </form>
             ) : selectedMatch && !selectedMatch.playerBId ? (
-              <div className="emptyState">BYE勝利</div>
+              <div className="resultNotice">
+                <strong>このラウンドは不戦勝（BYE）です</strong>
+                <span>
+                  対戦相手がいないため自動的に1勝がつきます。次のラウンド開始までお待ちください。
+                </span>
+              </div>
             ) : (
               <div className="emptyState">
                 {tournament.state === "setup" || tournament.state === "ready"
-                  ? "ラウンド開始待ち"
+                  ? "ラウンド開始待ちです。対戦表が発表されるとここに表示されます。"
                   : "現在の対戦はありません"}
               </div>
             )}
@@ -1502,6 +1928,7 @@ export default function SwissDrawClient({
             standings={standings}
             rounds={tournament.rounds}
             players={tournament.players}
+            selfId={selectedPlayerId}
           />
         </section>
       )}
@@ -1518,12 +1945,42 @@ export default function SwissDrawClient({
 }
 
 function Qr({ seed }: { seed: string }) {
-  const cells = makeQrCells(seed || "swiss-draw");
+  const modules = useMemo(() => {
+    try {
+      return qrModules(seed || "swiss-draw");
+    } catch {
+      return null;
+    }
+  }, [seed]);
+  if (!modules) return null;
+  const size = modules.length;
+  const quiet = 4;
+  const total = size + quiet * 2;
   return (
-    <div className="qr" aria-hidden="true">
-      {cells.map((active, index) => (
-        <span className={active ? "on" : ""} key={index} />
-      ))}
+    <div className="qrBox">
+      <svg
+        role="img"
+        aria-label="参加者URLのQRコード"
+        shapeRendering="crispEdges"
+        viewBox={`0 0 ${total} ${total}`}
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <rect fill="#ffffff" height={total} width={total} x={0} y={0} />
+        {modules.flatMap((row, y) =>
+          row.map((dark, x) =>
+            dark ? (
+              <rect
+                fill="#000000"
+                height={1}
+                key={`${x}-${y}`}
+                width={1}
+                x={x + quiet}
+                y={y + quiet}
+              />
+            ) : null,
+          ),
+        )}
+      </svg>
     </div>
   );
 }
@@ -1551,14 +2008,23 @@ function AdminMatchControls({
   onReport: (matchId: string, scoreA: number, scoreB: number) => void;
   targetScore: number;
 }) {
-  const [scoreA, setScoreA] = useState(match.scoreA ?? targetScore);
-  const [scoreB, setScoreB] = useState(match.scoreB ?? 0);
+  // -1 means "not selected yet" so a hurried tap on 確定 can never record a default winner.
+  const [scoreA, setScoreA] = useState(match.scoreA ?? -1);
+  const [scoreB, setScoreB] = useState(match.scoreB ?? -1);
   const [extensionMinutes, setExtensionMinutes] = useState(1);
   const [judgePlayerId, setJudgePlayerId] = useState(match.playerAId);
   const [judgeAction, setJudgeAction] = useState<JudgeActionType>("caution");
   const [judgeNote, setJudgeNote] = useState("");
   const playerAName = playerName(players, match.playerAId);
   const playerBName = playerName(players, match.playerBId);
+  const scoresChosen = scoreA >= 0 && scoreB >= 0;
+  const canConfirm =
+    scoresChosen && scoreA !== scoreB && Math.max(scoreA, scoreB) === targetScore;
+
+  useEffect(() => {
+    if (match.scoreA !== null) setScoreA(match.scoreA);
+    if (match.scoreB !== null) setScoreB(match.scoreB);
+  }, [match.scoreA, match.scoreB]);
 
   function localScoreButtons(value: number, onChange: (score: number) => void) {
     return (
@@ -1591,7 +2057,7 @@ function AdminMatchControls({
         </div>
         <div className="resultActions">
           <button
-            disabled={disabled || scoreA === scoreB || Math.max(scoreA, scoreB) !== targetScore}
+            disabled={disabled || !canConfirm}
             onClick={() => onReport(match.id, scoreA, scoreB)}
             type="button"
           >
@@ -1607,6 +2073,11 @@ function AdminMatchControls({
             両者敗北
           </button>
         </div>
+        {!disabled && !canConfirm ? (
+          <p className="fieldNote">
+            勝者のスコアを {targetScore} にすると確定できます（同点は「両者敗北」で記録します）。
+          </p>
+        ) : null}
       </div>
 
       <div className="turnOrderTools">
@@ -1632,6 +2103,7 @@ function AdminMatchControls({
       <div className="judgeTools">
         <div className="timeExtend">
           <input
+            aria-label="延長時間（分）"
             disabled={disabled}
             min={1}
             type="number"
@@ -1639,14 +2111,20 @@ function AdminMatchControls({
             onChange={(event) => setExtensionMinutes(Number(event.target.value))}
           />
           <button disabled={disabled} type="button" onClick={() => onExtendTime(match.id, extensionMinutes)}>
-            延長
+            +{extensionMinutes}分延長
           </button>
         </div>
-        <select disabled={disabled} value={judgePlayerId} onChange={(event) => setJudgePlayerId(event.target.value)}>
+        <select
+          aria-label="ジャッジ対象プレイヤー"
+          disabled={disabled}
+          value={judgePlayerId}
+          onChange={(event) => setJudgePlayerId(event.target.value)}
+        >
           <option value={match.playerAId}>{players.find((player) => player.id === match.playerAId)?.name}</option>
           <option value={match.playerBId!}>{players.find((player) => player.id === match.playerBId)?.name}</option>
         </select>
         <select
+          aria-label="ペナルティ種別"
           disabled={disabled}
           value={judgeAction}
           onChange={(event) => setJudgeAction(event.target.value as JudgeActionType)}
@@ -1658,6 +2136,8 @@ function AdminMatchControls({
           ))}
         </select>
         <input
+          aria-label="裁定メモ"
+          className="judgeNoteInput"
           disabled={disabled}
           placeholder="裁定メモ"
           value={judgeNote}
@@ -1695,13 +2175,19 @@ function StandingsPanel({
   standings,
   rounds,
   players,
+  selfId,
 }: {
   isFinal: boolean;
   standings: Standing[];
   rounds: Round[];
   players: Player[];
+  selfId?: string;
 }) {
   const visibleStandings = standings.filter((standing) => !standing.disqualified);
+  const disqualifiedStandings = standings.filter((standing) => standing.disqualified);
+  const selfRank = selfId
+    ? visibleStandings.findIndex((standing) => standing.id === selfId) + 1
+    : 0;
   return (
     <section className="panel standingsPanel">
       <div className="panelHeader">
@@ -1711,10 +2197,19 @@ function StandingsPanel({
         </div>
       </div>
       {isFinal ? (
-        <p className="standingsHint">大会終了済み。この順位を確認してから外部連携用データを保存してください。</p>
+        <p className="standingsHint">
+          {selfId
+            ? "おつかれさまでした。確定した最終順位です。"
+            : "大会終了済み。この順位を確認してから外部連携用データを保存してください。"}
+        </p>
       ) : (
-        <p className="standingsHint">進行中の暫定順位です。OMW%は対戦相手勝率のタイブレーカーです。</p>
+        <p className="standingsHint">
+          進行中の暫定順位です。MP=マッチポイント（1勝3点）。OMW%=対戦相手のマッチ勝率（同点時の順位決定に使用）。
+        </p>
       )}
+      {selfId && selfRank > 0 ? (
+        <p className="myRankLine">あなた: {selfRank}位</p>
+      ) : null}
       <div className="standingRow standingsHead" aria-hidden="true">
         <span>順位</span>
         <strong>プレイヤー</strong>
@@ -1725,13 +2220,38 @@ function StandingsPanel({
       </div>
       <div className="standingsTable">
         {visibleStandings.map((standing, index) => (
-          <div className={standing.dropped ? "standingRow dropped" : "standingRow"} key={standing.id}>
+          <div
+            className={[
+              "standingRow",
+              standing.dropped ? "dropped" : "",
+              selfId === standing.id ? "selfRow" : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
+            key={standing.id}
+          >
             <span>{index + 1}</span>
-            <strong>{standing.name}</strong>
+            <strong>
+              {standing.name}
+              {standing.dropped ? <b className="rowBadge">棄権</b> : null}
+            </strong>
             <span>{standing.matchPoints}MP</span>
             <span>{standing.wins}W</span>
             <span>{standing.losses}L</span>
             <span>{formatPercentage(standing.opponentsMatchWinPercentage)}</span>
+          </div>
+        ))}
+        {disqualifiedStandings.map((standing) => (
+          <div className="standingRow dqRow" key={standing.id}>
+            <span>-</span>
+            <strong>
+              {standing.name}
+              <b className="rowBadge dq">失格</b>
+            </strong>
+            <span>{standing.matchPoints}MP</span>
+            <span>{standing.wins}W</span>
+            <span>{standing.losses}L</span>
+            <span>-</span>
           </div>
         ))}
       </div>
@@ -1739,7 +2259,7 @@ function StandingsPanel({
       <div className="history">
         {rounds.map((round) => (
           <details key={round.number}>
-            <summary>Round {round.number}</summary>
+            <summary>ラウンド {round.number}</summary>
             {round.matches.map((match) => (
               <div className="historyRow" key={match.id}>
                 <span>T{match.table}</span>
@@ -1751,10 +2271,10 @@ function StandingsPanel({
                   {match.resultType === "double-loss"
                     ? "両者敗北"
                     : match.resultType === "bye"
-                      ? "BYE"
+                      ? "不戦勝(BYE)"
                       : match.status === "forced"
                         ? "裁定"
-                        : match.status}
+                        : matchStatusLabels[match.status]}
                   {match.firstPlayerId ? ` / 先攻 ${playerName(players, match.firstPlayerId)}` : ""}
                   {match.judgeActions.length > 0
                     ? ` / ${match.judgeActions

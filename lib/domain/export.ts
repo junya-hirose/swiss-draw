@@ -61,6 +61,8 @@ export function buildResultsPayload(tournament: Tournament, standings: Standing[
     })),
     rounds: tournament.rounds.map((round) => exportRound(round, tournament)),
     events: tournament.events,
+    // Raw tournament snapshot so the app can restore state from this file.
+    tournament,
   };
 }
 

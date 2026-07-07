@@ -63,6 +63,8 @@ export type Round = {
   number: number;
   status: RoundStatus;
   matches: Match[];
+  /** ISO timestamp when the shared round clock ends. null = paused, undefined = legacy data. */
+  endsAt?: string | null;
 };
 
 export type TimelineEvent = {
