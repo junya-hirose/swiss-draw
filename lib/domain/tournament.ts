@@ -38,6 +38,12 @@ export type JudgeAction = {
   createdAt: string;
 };
 
+export type JudgeCall = {
+  id: string;
+  calledAt: string;
+  resolvedAt: string | null;
+};
+
 export type Match = {
   id: string;
   round: number;
@@ -57,6 +63,7 @@ export type Match = {
   timeRemainingSeconds: number | null;
   timeExtensionSeconds: number;
   judgeActions: JudgeAction[];
+  judgeCalls?: JudgeCall[];
 };
 
 export type Round = {
@@ -90,7 +97,12 @@ export type Standing = Player & {
   playedRounds: number;
   matchWinPercentage: number;
   opponentsMatchWinPercentage: number;
+  /** 公式タイブレーカー3: 勝利した対戦相手のマッチポイント合計。 */
+  defeatedOpponentsMatchPoints: number;
+  /** 公式タイブレーカー4: 対戦相手のOMW%の平均。 */
+  opponentsOpponentsMatchWinPercentage: number;
   opponents: string[];
+  defeatedOpponents: string[];
   dropped: boolean;
 };
 
@@ -175,6 +187,7 @@ export function normalizeMatch(
     timeRemainingSeconds: match.timeRemainingSeconds ?? baseSeconds,
     timeExtensionSeconds: match.timeExtensionSeconds ?? 0,
     judgeActions: match.judgeActions ?? [],
+    judgeCalls: match.judgeCalls ?? [],
   };
 }
 
@@ -289,7 +302,10 @@ export function buildStandings(players: Player[], rounds: Round[], settings: Set
       playedRounds: 0,
       matchWinPercentage: 0,
       opponentsMatchWinPercentage: 0,
+      defeatedOpponentsMatchPoints: 0,
+      opponentsOpponentsMatchWinPercentage: 0,
       opponents: [],
+      defeatedOpponents: [],
       dropped: player.disqualified ?? false,
     });
   });
@@ -321,10 +337,12 @@ export function buildStandings(players: Player[], rounds: Round[], settings: Set
       if (match.winnerId === a.id) {
         a.wins += 1;
         a.matchPoints += 3;
+        a.defeatedOpponents.push(b.id);
         b.losses += 1;
       } else if (match.winnerId === b.id) {
         b.wins += 1;
         b.matchPoints += 3;
+        b.defeatedOpponents.push(a.id);
         a.losses += 1;
       } else {
         a.losses += 1;
@@ -345,27 +363,50 @@ export function buildStandings(players: Player[], rounds: Round[], settings: Set
   });
   const byId = new Map(standings.map((standing) => [standing.id, standing]));
 
-  return standings
+  // 公式タイブレーカー2: 対戦相手のMWP平均（不戦勝ラウンドは opponents に含まれないため自動的に除外）。
+  // 公式タイブレーカー3: 勝利した対戦相手のマッチポイント合計。
+  const withOpponentPercentages = standings.map((standing) => ({
+    ...standing,
+    opponentsMatchWinPercentage:
+      standing.opponents.length > 0
+        ? standing.opponents.reduce(
+            (total, opponentId) => total + (byId.get(opponentId)?.matchWinPercentage ?? 0),
+            0,
+          ) / standing.opponents.length
+        : 0,
+    defeatedOpponentsMatchPoints: standing.defeatedOpponents.reduce(
+      (total, opponentId) => total + (byId.get(opponentId)?.matchPoints ?? 0),
+      0,
+    ),
+    dropped: standing.disqualified === true || standing.losses >= limit,
+  }));
+  const omwById = new Map(withOpponentPercentages.map((standing) => [standing.id, standing]));
+
+  // 公式タイブレーカー4: 対戦相手の「対戦相手・マッチ・ウィン・パーセンテージ」の平均。
+  return withOpponentPercentages
     .map((standing) => ({
       ...standing,
-      opponentsMatchWinPercentage:
+      opponentsOpponentsMatchWinPercentage:
         standing.opponents.length > 0
           ? standing.opponents.reduce(
-              (total, opponentId) => total + (byId.get(opponentId)?.matchWinPercentage ?? 0),
+              (total, opponentId) =>
+                total + (omwById.get(opponentId)?.opponentsMatchWinPercentage ?? 0),
               0,
             ) / standing.opponents.length
           : 0,
-      dropped: standing.disqualified === true || standing.losses >= limit,
     }))
     .sort((a, b) => {
+      // 公式順: マッチポイント → OMW% → 勝利対戦相手の合計得点 → 相手のOMW%平均。
       const pointDiff = b.matchPoints - a.matchPoints;
       if (pointDiff) return pointDiff;
       const opponentDiff = b.opponentsMatchWinPercentage - a.opponentsMatchWinPercentage;
       if (opponentDiff) return opponentDiff;
-      const lossDiff = a.losses - b.losses;
-      if (lossDiff) return lossDiff;
-      const gameDiff = b.gameWins - b.gameLosses - (a.gameWins - a.gameLosses);
-      if (gameDiff) return gameDiff;
+      const defeatedDiff = b.defeatedOpponentsMatchPoints - a.defeatedOpponentsMatchPoints;
+      if (defeatedDiff) return defeatedDiff;
+      const oppOppDiff =
+        b.opponentsOpponentsMatchWinPercentage - a.opponentsOpponentsMatchWinPercentage;
+      if (oppOppDiff) return oppOppDiff;
+      // 公式タイブレーカーで同点の場合の表示順は決定的にするため名前順（順位としては同順位扱い）。
       return a.name.localeCompare(b.name);
     });
 }

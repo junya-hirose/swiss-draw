@@ -140,6 +140,15 @@ function remainingSecondsFromEndsAt(endsAt: string | null | undefined): number |
   return Math.max(0, remaining);
 }
 
+function secondsBetween(fromIso: string, toIso?: string | null): number {
+  const to = toIso ? new Date(toIso).getTime() : Date.now();
+  return Math.max(0, Math.round((to - new Date(fromIso).getTime()) / 1000));
+}
+
+function formatElapsed(seconds: number) {
+  return `${Math.floor(seconds / 60)}分${String(seconds % 60).padStart(2, "0")}秒`;
+}
+
 type SwissDrawClientProps = {
   initialEventCode?: string | null;
   initialPlayerId?: string;
@@ -200,8 +209,21 @@ export default function SwissDrawClient({
     () => buildStandings(tournament.players, tournament.rounds, tournament.settings),
     [tournament.players, tournament.rounds, tournament.settings],
   );
+  // Participants only see standings as of the last completed round; live interim
+  // results stay on the admin side until the next pairings are published.
+  const completedRounds = useMemo(
+    () => tournament.rounds.filter((round) => round.status === "complete"),
+    [tournament.rounds],
+  );
+  const participantStandings = useMemo(
+    () => buildStandings(tournament.players, completedRounds, tournament.settings),
+    [tournament.players, completedRounds, tournament.settings],
+  );
   const selectedPlayer = tournament.players.find((player) => player.id === selectedPlayerId);
   const selectedStanding = standings.find((standing) => standing.id === selectedPlayerId);
+  const participantStanding = participantStandings.find(
+    (standing) => standing.id === selectedPlayerId,
+  );
   const selectedMatch = currentRound?.matches.find(
     (match) =>
       match.playerAId === selectedPlayerId || match.playerBId === selectedPlayerId,
@@ -398,12 +420,12 @@ export default function SwissDrawClient({
   }, [selectedMatch?.id, selectedPlayerId]);
 
   useEffect(() => {
-    if (view !== "participant") return;
+    // Keeps the shared round clock and judge-call stopwatches fresh on both views.
     const id = window.setInterval(() => {
       setNowTick((tick) => tick + 1);
     }, 1000);
     return () => window.clearInterval(id);
-  }, [view]);
+  }, []);
 
   useEffect(() => {
     setDeckName(selectedPlayer?.deckName ?? "");
@@ -832,6 +854,14 @@ export default function SwissDrawClient({
     }));
   }
 
+  function remainingSecondsAtReport(round: Round, match: Match): number | null {
+    if (round.status !== "active") return match.timeRemainingSeconds;
+    const shared = remainingSecondsFromEndsAt(round.endsAt);
+    const base = shared ?? timerSeconds;
+    if (base === null) return match.timeRemainingSeconds;
+    return base + match.timeExtensionSeconds;
+  }
+
   function reportMatch(matchId: string, scoreA: number, scoreB: number, forced = false) {
     if (scoreA === scoreB || Math.max(scoreA, scoreB) !== targetScore) return;
     setTournament((current) => {
@@ -850,6 +880,8 @@ export default function SwissDrawClient({
             resultType: "win" as const,
             resultNote: "",
             status,
+            // Freeze the clock at the moment the result is recorded.
+            timeRemainingSeconds: remainingSecondsAtReport(round, match),
           };
         }),
       }));
@@ -860,6 +892,72 @@ export default function SwissDrawClient({
         ...current,
         rounds: nextRounds,
         events: [makeEvent(`${winner} 勝利 ${scoreA}-${scoreB}`), ...current.events].slice(0, 30),
+      };
+    });
+  }
+
+  function recordJudgeCall(matchId: string) {
+    setTournament((current) => {
+      if (current.state === "complete") return current;
+      const table = current.rounds
+        .flatMap((round) => round.matches)
+        .find((match) => match.id === matchId)?.table;
+      return {
+        ...current,
+        rounds: current.rounds.map((round) => ({
+          ...round,
+          matches: round.matches.map((match) => {
+            if (match.id !== matchId) return match;
+            const calls = match.judgeCalls ?? [];
+            if (calls.some((call) => !call.resolvedAt)) return match;
+            return {
+              ...match,
+              judgeCalls: [
+                {
+                  id: Math.random().toString(36).slice(2),
+                  calledAt: new Date().toISOString(),
+                  resolvedAt: null,
+                },
+                ...calls,
+              ],
+            };
+          }),
+        })),
+        events: [makeEvent(`T${table ?? "?"} ジャッジ呼出`), ...current.events].slice(0, 30),
+      };
+    });
+  }
+
+  function resolveJudgeCall(matchId: string) {
+    setTournament((current) => {
+      if (current.state === "complete") return current;
+      let logText = "";
+      const rounds = current.rounds.map((round) => ({
+        ...round,
+        matches: round.matches.map((match) => {
+          if (match.id !== matchId) return match;
+          const calls = match.judgeCalls ?? [];
+          const open = calls.find((call) => !call.resolvedAt);
+          if (!open) return match;
+          const resolvedAt = new Date().toISOString();
+          const seconds = Math.max(
+            0,
+            Math.round((new Date(resolvedAt).getTime() - new Date(open.calledAt).getTime()) / 1000),
+          );
+          logText = `T${match.table} ジャッジ対応終了（${Math.floor(seconds / 60)}分${seconds % 60}秒）`;
+          return {
+            ...match,
+            judgeCalls: calls.map((call) =>
+              call.id === open.id ? { ...call, resolvedAt } : call,
+            ),
+          };
+        }),
+      }));
+      if (!logText) return current;
+      return {
+        ...current,
+        rounds,
+        events: [makeEvent(logText), ...current.events].slice(0, 30),
       };
     });
   }
@@ -913,6 +1011,7 @@ export default function SwissDrawClient({
             resultType: "double-loss" as const,
             resultNote: "両者敗北",
             status: "forced" as const,
+            timeRemainingSeconds: remainingSecondsAtReport(round, match),
           };
         }),
       }));
@@ -1544,6 +1643,8 @@ export default function SwissDrawClient({
                         onDoubleLoss={reportDoubleLoss}
                         onExtendTime={extendMatchTime}
                         onForceLoss={forceLoss}
+                        onJudgeCall={recordJudgeCall}
+                        onJudgeResolve={resolveJudgeCall}
                         onSetFirstPlayer={setFirstPlayer}
                         onReport={reportMatch}
                         targetScore={targetScore}
@@ -1730,9 +1831,12 @@ export default function SwissDrawClient({
                 <strong>{selectedPlayer.name}</strong>
                 <span>{selectedPlayer.id}</span>
                 <small>
-                  {selectedStanding
-                    ? `${selectedStanding.wins}勝${selectedStanding.losses}敗・勝ち点${selectedStanding.matchPoints}`
-                    : "0勝0敗・勝ち点0"}
+                  {(() => {
+                    const shown = isComplete ? selectedStanding : participantStanding;
+                    return shown
+                      ? `${shown.wins}勝${shown.losses}敗・勝ち点${shown.matchPoints}`
+                      : "0勝0敗・勝ち点0";
+                  })()}
                 </small>
               </div>
             ) : (
@@ -1867,13 +1971,44 @@ export default function SwissDrawClient({
                     </button>
                   </div>
                 </div>
+                {currentRound?.status === "active" && !isComplete ? (
+                  (() => {
+                    const openCall = (selectedMatch.judgeCalls ?? []).find(
+                      (call) => !call.resolvedAt,
+                    );
+                    return openCall ? (
+                      <div className="judgeCallLine active">
+                        <strong>
+                          ジャッジを呼び出し中（{formatElapsed(secondsBetween(openCall.calledAt))}経過）
+                        </strong>
+                        <small>そのままお待ちください。</small>
+                      </div>
+                    ) : (
+                      <div className="judgeCallLine">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (window.confirm("ジャッジを呼び出しますか？呼出時刻が記録されます。")) {
+                              recordJudgeCall(selectedMatch.id);
+                            }
+                          }}
+                        >
+                          ジャッジを呼ぶ
+                        </button>
+                        <small>困ったときは手を挙げてスタッフにも知らせてください。</small>
+                      </div>
+                    );
+                  })()
+                ) : null}
                 {selectedMatch.status === "reported" || selectedMatch.status === "forced" ? (
                   <div className="resultNotice">
                     <strong>報告済み</strong>
                     <span>
-                      {selectedMatch.resultType === "double-loss"
-                        ? "両者敗北"
-                        : `${selectedMatch.scoreA ?? "-"} - ${selectedMatch.scoreB ?? "-"} / 勝者 ${playerName(tournament.players, selectedMatch.winnerId)}`}
+                      {isComplete
+                        ? selectedMatch.resultType === "double-loss"
+                          ? "両者敗北"
+                          : `${selectedMatch.scoreA ?? "-"} - ${selectedMatch.scoreB ?? "-"} / 勝者 ${playerName(tournament.players, selectedMatch.winnerId)}`
+                        : "結果を受け付けました。順位は次のラウンド発表時に更新されます。"}
                     </span>
                   </div>
                 ) : null}
@@ -1925,21 +2060,23 @@ export default function SwissDrawClient({
 
           <StandingsPanel
             isFinal={isComplete}
-            standings={standings}
-            rounds={tournament.rounds}
+            standings={isComplete ? standings : participantStandings}
+            rounds={completedRounds}
             players={tournament.players}
             selfId={selectedPlayerId}
           />
         </section>
       )}
 
-      <section className="ticker" aria-label="round events">
-        <div>
-          {tournament.events.map((event) => (
-            <span key={event.id}>{event.text}</span>
-          ))}
-        </div>
-      </section>
+      {view === "admin" ? (
+        <section className="ticker" aria-label="round events">
+          <div>
+            {tournament.events.map((event) => (
+              <span key={event.id}>{event.text}</span>
+            ))}
+          </div>
+        </section>
+      ) : null}
     </main>
   );
 }
@@ -1993,6 +2130,8 @@ function AdminMatchControls({
   onDoubleLoss,
   onExtendTime,
   onForceLoss,
+  onJudgeCall,
+  onJudgeResolve,
   onSetFirstPlayer,
   onReport,
   targetScore,
@@ -2004,6 +2143,8 @@ function AdminMatchControls({
   onDoubleLoss: (matchId: string) => void;
   onExtendTime: (matchId: string, minutes: number) => void;
   onForceLoss: (match: Match, loserId: string) => void;
+  onJudgeCall: (matchId: string) => void;
+  onJudgeResolve: (matchId: string) => void;
   onSetFirstPlayer: (matchId: string, firstPlayerId: string) => void;
   onReport: (matchId: string, scoreA: number, scoreB: number) => void;
   targetScore: number;
@@ -2020,11 +2161,25 @@ function AdminMatchControls({
   const scoresChosen = scoreA >= 0 && scoreB >= 0;
   const canConfirm =
     scoresChosen && scoreA !== scoreB && Math.max(scoreA, scoreB) === targetScore;
+  const judgeCalls = match.judgeCalls ?? [];
+  const openJudgeCall = judgeCalls.find((call) => !call.resolvedAt) ?? null;
+  const lastResolvedCall = judgeCalls.find((call) => call.resolvedAt) ?? null;
+  const lastResolvedSeconds = lastResolvedCall
+    ? secondsBetween(lastResolvedCall.calledAt, lastResolvedCall.resolvedAt)
+    : null;
 
   useEffect(() => {
     if (match.scoreA !== null) setScoreA(match.scoreA);
     if (match.scoreB !== null) setScoreB(match.scoreB);
   }, [match.scoreA, match.scoreB]);
+
+  useEffect(() => {
+    // After a judge call is resolved, suggest the interruption length as the extension.
+    if (lastResolvedSeconds !== null && lastResolvedSeconds >= 60) {
+      setExtensionMinutes(Math.max(1, Math.ceil(lastResolvedSeconds / 60)));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastResolvedCall?.id, lastResolvedCall?.resolvedAt]);
 
   function localScoreButtons(value: number, onChange: (score: number) => void) {
     return (
@@ -2098,6 +2253,30 @@ function AdminMatchControls({
         >
           {playerBName}先攻
         </button>
+      </div>
+
+      <div className={openJudgeCall ? "judgeCallLine active" : "judgeCallLine"}>
+        {openJudgeCall ? (
+          <>
+            <strong>ジャッジ対応中 {formatElapsed(secondsBetween(openJudgeCall.calledAt))}</strong>
+            <small>{new Date(openJudgeCall.calledAt).toLocaleTimeString("ja-JP")} 呼出</small>
+            <button disabled={disabled} type="button" onClick={() => onJudgeResolve(match.id)}>
+              対応終了
+            </button>
+          </>
+        ) : (
+          <>
+            <button disabled={disabled} type="button" onClick={() => onJudgeCall(match.id)}>
+              ジャッジ呼出を記録
+            </button>
+            {lastResolvedSeconds !== null ? (
+              <small>
+                前回対応 {formatElapsed(lastResolvedSeconds)}
+                {lastResolvedSeconds >= 60 ? "（延長時間に反映済み。必要なら「延長」で記録）" : ""}
+              </small>
+            ) : null}
+          </>
+        )}
       </div>
 
       <div className="judgeTools">
@@ -2204,7 +2383,9 @@ function StandingsPanel({
         </p>
       ) : (
         <p className="standingsHint">
-          進行中の暫定順位です。MP=マッチポイント（1勝3点）。OMW%=対戦相手のマッチ勝率（同点時の順位決定に使用）。
+          {selfId
+            ? "各ラウンド終了時に更新される順位です。MP=マッチポイント（1勝3点）。OMW%=対戦相手のマッチ勝率（同点時の順位決定に使用）。"
+            : "進行中の暫定順位です。順位は公式順（MP → OMW% → 勝利対戦相手のMP合計 → 相手のOMW%平均）で決定。行にカーソルを合わせると詳細値を表示します。"}
         </p>
       )}
       {selfId && selfRank > 0 ? (
@@ -2229,6 +2410,7 @@ function StandingsPanel({
               .filter(Boolean)
               .join(" ")}
             key={standing.id}
+            title={`MWP ${formatPercentage(standing.matchWinPercentage)} / OMW ${formatPercentage(standing.opponentsMatchWinPercentage)} / 勝利相手MP合計 ${standing.defeatedOpponentsMatchPoints} / 相手OMW平均 ${formatPercentage(standing.opponentsOpponentsMatchWinPercentage)}`}
           >
             <span>{index + 1}</span>
             <strong>

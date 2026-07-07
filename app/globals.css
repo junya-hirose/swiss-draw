@@ -1278,6 +1278,31 @@ h2 {
   font-size: 12px;
 }
 
+.judgeCallLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+}
+
+.judgeCallLine small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.judgeCallLine.active {
+  border-color: var(--red);
+  background: rgba(255, 79, 66, 0.08);
+}
+
+.judgeCallLine.active strong {
+  color: var(--red);
+  font-size: 13px;
+}
+
 @media (max-width: 1180px) {
   .adminGrid,
   .participantGrid {

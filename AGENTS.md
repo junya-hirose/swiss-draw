@@ -137,7 +137,7 @@ These are expected unless a task asks to fix them:
 - Participant URLs are not secure.
 - Cross-device realtime sync is not implemented. The share UI now states this limitation explicitly.
 - Draw result input is incomplete.
-- Detailed tiebreakers such as GW% and OGW% are not implemented (OMW% is shown).
+- Standings follow the official DM tiebreak order: match points → OMW% → defeated opponents' total match points → opponents' average OMW%. GW%-style tiebreakers are not part of the official order and are not used.
 - Tests are not yet present.
 
 Resolved since the last revision:
